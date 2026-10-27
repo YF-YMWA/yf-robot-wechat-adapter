@@ -19,6 +19,11 @@ lines = []
 
 def log(msg):
     lines.append(str(msg))
+    # 同时打到终端：双击运行时窗口里要能看见，不然像卡死了
+    try:
+        print(msg, flush=True)
+    except Exception:                              # noqa: BLE001
+        pass
     with open(OUT, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
 
@@ -31,21 +36,55 @@ log('========================================')
 log('')
 
 # ===== 1. 微信进程 =====
+WECHAT_PIDS = []   # 给第 4 节权限检查复用，避免重复检测（psutil 可能漏）
 log('【1】微信进程')
 try:
-    import psutil
     procs = []
-    for p in psutil.process_iter(['pid', 'name', 'memory_info']):
-        if p.info['name'] and 'weixin' in p.info['name'].lower():
-            procs.append(p.info)
+
+    # 先走 psutil（信息全）
+    try:
+        import psutil
+
+        for p in psutil.process_iter(['pid', 'name', 'memory_info']):
+            nm = (p.info.get('name') or '').lower()
+            if 'weixin' in nm or 'wechat' in nm:
+                try:
+                    rss = p.info['memory_info'].rss
+                except Exception:                  # noqa: BLE001
+                    rss = 0
+                procs.append((p.info['pid'], p.info.get('name'), rss))
+    except Exception as e:                         # noqa: BLE001
+        log(f'  psutil 枚举失败: {e}')
+
+    # psutil 看不到就用 Win32 枚举（微信本体权限更高时，非管理员 psutil 会漏）
+    if not procs:
+        try:
+            import win32process
+            import win32api
+            import win32con
+            import win32com.client
+
+            pids = win32process.EnumProcesses()
+            wmi = win32com.client.GetObject('winmgmts:')
+            for pr in wmi.ExecQuery('SELECT ProcessId,Name FROM Win32_Process'):
+                nm = (pr.Name or '').lower()
+                if 'weixin' in nm or 'wechat' in nm:
+                    procs.append((pr.ProcessId, pr.Name, 0))
+            del pids, win32api, win32con
+        except Exception as e:                     # noqa: BLE001
+            log(f'  Win32 枚举也失败: {e}')
 
     if procs:
-        procs.sort(key=lambda x: x['memory_info'].rss, reverse=True)
-        main = procs[0]
-        log(f'  主进程 PID: {main["pid"]}  内存: {main["memory_info"].rss // 1024 // 1024}MB')
+        procs.sort(key=lambda x: x[2], reverse=True)
+        WECHAT_PIDS.extend([p[0] for p in procs])
+        pid, name, rss = procs[0]
+        log(f'  主进程: {name} (PID {pid})'
+            + (f'  内存 {rss // 1024 // 1024}MB' if rss else ''))
         log(f'  进程总数: {len(procs)}')
     else:
-        log('  [错误] 微信未运行')
+        log('  [注意] 看不到微信进程')
+        log('         可能原因：微信没启动，或者当前不是管理员权限')
+        log('         （微信权限比普通程序高时，普通权限枚举不到它）')
 except Exception as e:
     log(f'  [错误] {e}')
 
@@ -57,18 +96,30 @@ try:
     import win32gui
 
     def find_wechat_windows():
+        """找微信主窗。
+
+        不再要求标题是「微信」—— 微信 4.x 的主窗标题是**账号昵称**（比如「大肥鱼」）。
+        改成看类名（Qt 窗口）+ 尺寸，顺带把「不可见 / 在托盘」的也收进来，
+        这样能明确告诉用户是哪一种情况，而不是笼统说「找不到」。
+        """
         result = []
 
         def callback(hwnd, _):
-            if not win32gui.IsWindowVisible(hwnd):
-                return
-            title = win32gui.GetWindowText(hwnd)
-            cls = win32gui.GetClassName(hwnd)
-            if 'Weixin' in cls or 'mmui' in cls or 'Qt5' in cls or title in ('微信', 'Weixin'):
-                rect = win32gui.GetWindowRect(hwnd)
-                w, h = rect[2] - rect[0], rect[3] - rect[1]
-                if w > 300 and h > 250:
-                    result.append((hwnd, title, cls, rect, w, h))
+            cls = win32gui.GetClassName(hwnd) or ''
+            title = win32gui.GetWindowText(hwnd) or ''
+            is_candidate = (
+                'Weixin' in cls
+                or 'mmui' in cls
+                or 'Qt5' in cls
+                or 'Qt6' in cls
+            )
+            if not is_candidate:
+                return True
+            rect = win32gui.GetWindowRect(hwnd)
+            w, h = rect[2] - rect[0], rect[3] - rect[1]
+            visible = bool(win32gui.IsWindowVisible(hwnd))
+            # 托盘里的窗口尺寸可能是 0 或负数，别用尺寸把它们筛掉
+            result.append((hwnd, title, cls, rect, w, h, visible))
             return True
 
         win32gui.EnumWindows(callback, None)
@@ -76,15 +127,27 @@ try:
 
     wins = find_wechat_windows()
     if wins:
-        for hwnd, title, cls, rect, w, h in wins:
+        for hwnd, title, cls, rect, w, h, visible in wins:
             x, y = rect[0], rect[1]
-            in_screen = -10000 < x < 10000 and -10000 < y < 10000
-            log(f'  窗口: "{title}"')
+            # 最小化不一定就是 -32000，实测还见过 -21333；IsIconic 最可靠
+            try:
+                minimized = bool(win32gui.IsIconic(hwnd))
+            except Exception:                      # noqa: BLE001
+                minimized = False
+            if not minimized:
+                # 兜底：坐标离谱或尺寸小到不像主窗
+                minimized = x <= -10000 or y <= -10000 or w < 300 or h < 200
+            log(f'  窗口: "{title or "(无标题)"}"  hwnd={hwnd}')
             log(f'    类名: {cls}')
-            log(f'    位置: ({x},{y}) 尺寸: {w}x{h}')
-            log(f'    在屏幕内: {"是" if in_screen else "否（有问题！）"}')
+            log(f'    可见: {"是" if visible else "否"}')
+            if minimized:
+                log(f'    位置: ({x},{y})  ← 在托盘/已最小化，自动化拿不到控件')
+                log('    [问题] 把微信主窗口点出来（点托盘图标），不要最小化')
+            else:
+                log(f'    位置: ({x},{y}) 尺寸: {w}x{h}')
     else:
-        log('  [错误] 找不到微信主窗口')
+        log('  [注意] 没找到微信窗口（按 Qt 类名找的）')
+        log('         如果微信明明开着，多半是没管理员权限，读不到窗口信息')
 except Exception as e:
     log(f'  [错误] {e}')
 
@@ -115,12 +178,14 @@ log('')
 # ===== 4. 权限（读微信模块） =====
 log('【4】权限检查')
 try:
-    import psutil
-    wx = None
-    for p in psutil.process_iter(['pid', 'name']):
-        if p.info['name'] and 'weixin' in p.info['name'].lower():
-            if wx is None:
+    # 复用第一节找到的 PID：微信权限比普通程序高时，psutil 再枚举一次还是空的
+    wx = WECHAT_PIDS[0] if WECHAT_PIDS else None
+    if not wx:
+        import psutil
+        for p in psutil.process_iter(['pid', 'name']):
+            if p.info['name'] and 'weixin' in p.info['name'].lower():
                 wx = p.info['pid']
+                break
 
     if wx:
         # 尝试读了望模块
@@ -136,7 +201,7 @@ try:
             log(f'  [失败] 无法打开微信进程 PID {wx}（错误 {err}）')
             log('         → 需要管理员权限')
     else:
-        log('  [错误] 找不到微信进程')
+        log('  [注意] 找不到微信进程（或没权限看），见第 1 节说明')
 except Exception as e:
     log(f'  [错误] {e}')
 

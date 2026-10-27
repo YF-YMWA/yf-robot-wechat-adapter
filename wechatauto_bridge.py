@@ -710,17 +710,37 @@ def preflight_check():
         if found:
             hwnd, title, rect = found[0]
             left, top, right, bottom = rect
-            if left <= -30000 or top <= -30000:
-                ok = False
-                log("")
-                log("=" * 56)
-                log("[!] 微信窗口在托盘里（窗口坐标 %d, %d）" % (left, top))
-                log("    自动化要操作真实窗口，托盘状态下拿不到控件。")
-                log("")
-                log("    解决：点右下角托盘的微信图标，把主窗口点出来，")
-                log("         别最小化，然后重新运行本程序。")
-                log("=" * 56)
-                log("")
+            if left <= -30000 or top <= -30000 or (right - left) < 300:
+                # 试试自己把窗口调出来 —— 以前要用户手动点托盘，太容易卡住
+                restored = False
+                try:
+                    if win32gui.IsIconic(hwnd):
+                        win32gui.ShowWindow(hwnd, 9)   # SW_RESTORE
+                    win32gui.SetForegroundWindow(hwnd)
+                    time.sleep(0.8)
+                    rect2 = win32gui.GetWindowRect(hwnd)
+                    restored = rect2[0] > -10000 and rect2[1] > -10000
+                except Exception as e:              # noqa: BLE001
+                    log("自动恢复微信窗口失败：%r" % (e,))
+
+                if restored:
+                    log("窗口自检：微信窗口原来在托盘里，已自动调出")
+                else:
+                    ok = False
+                    log("")
+                    log("=" * 56)
+                    log("[!] 微信窗口在托盘里（窗口坐标 %d, %d），自动调出失败" % (left, top))
+                    log("    自动化要操作真实窗口，托盘状态下拿不到控件。")
+                    log("")
+                    if not is_admin:
+                        log("    原因是当前不是管理员：微信权限比本程序高时，")
+                        log("    Windows 不允许普通权限去操作它的窗口（UIPI 拦截）。")
+                        log("    所以「以管理员身份运行」之后，这一步通常会自动成功。")
+                        log("")
+                    log("    也可以手动：点右下角托盘的微信图标，把主窗口点出来，")
+                    log("              别最小化，然后重新运行本程序。")
+                    log("=" * 56)
+                    log("")
             else:
                 log("窗口自检：找到微信主窗「%s」(%dx%d)" % (
                     title, right - left, bottom - top))
