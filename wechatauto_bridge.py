@@ -658,6 +658,80 @@ def bot_base():
     return url
 
 
+def preflight_check():
+    """启动前把「注定会失败」的情况先说清楚。
+
+    实测踩过两种，表现都是「连上了但发不出消息」，很难自己查出来：
+      1. 没用管理员权限 → 枚举不到 Weixin.dll → UIA 不可用 → 只剩 OCR
+      2. 微信最小化到托盘 → 窗口坐标变成 (-32000, -32000) → 拿不到可操作的窗口
+    这里提前检查，直接告诉用户怎么办，而不是等预热 30 秒后降级。
+    """
+    ok = True
+
+    # 1. 管理员权限
+    try:
+        import ctypes
+
+        is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:                              # noqa: BLE001
+        is_admin = False
+
+    if not is_admin:
+        ok = False
+        log("")
+        log("=" * 56)
+        log("[!] 不是管理员权限")
+        log("    读微信数据库、枚举微信进程模块都需要管理员。")
+        log("    不加管理员会怎样：UIA 用不了，只剩 OCR 兜底，")
+        log("    发消息慢而且容易失败。")
+        log("")
+        log("    解决：关掉这个窗口，右键 启动桥接.bat → 以管理员身份运行")
+        log("=" * 56)
+        log("")
+
+    # 2. 微信窗口是否在托盘里
+    try:
+        import win32gui
+
+        found = []
+
+        def _enum(hwnd, _):
+            if not win32gui.IsWindowVisible(hwnd):
+                return True
+            title = win32gui.GetWindowText(hwnd) or ""
+            cls = win32gui.GetClassName(hwnd) or ""
+            # 微信 4.x 主窗是 Qt 窗口，标题是账号昵称（不是「微信」两个字）
+            if cls.startswith("Qt") and "QWindowIcon" in cls and title:
+                found.append((hwnd, title, win32gui.GetWindowRect(hwnd)))
+            return True
+
+        win32gui.EnumWindows(_enum, None)
+
+        if found:
+            hwnd, title, rect = found[0]
+            left, top, right, bottom = rect
+            if left <= -30000 or top <= -30000:
+                ok = False
+                log("")
+                log("=" * 56)
+                log("[!] 微信窗口在托盘里（窗口坐标 %d, %d）" % (left, top))
+                log("    自动化要操作真实窗口，托盘状态下拿不到控件。")
+                log("")
+                log("    解决：点右下角托盘的微信图标，把主窗口点出来，")
+                log("         别最小化，然后重新运行本程序。")
+                log("=" * 56)
+                log("")
+            else:
+                log("窗口自检：找到微信主窗「%s」(%dx%d)" % (
+                    title, right - left, bottom - top))
+        else:
+            log("窗口自检：没找到可见的微信主窗（稍后预热失败的话，先把微信窗口点出来）")
+    except Exception as e:                          # noqa: BLE001
+        log("窗口自检跳过：%r" % (e,))
+
+    return ok
+
+
 def ensure_ffmpeg_env():
     """微信 4.x 的普通图片是 HEVC(wxgf) 容器，要 ffmpeg 才能转成 jpg。
 
@@ -801,6 +875,9 @@ def main():
     CURRENT_BOT_URL = bot_url
     log("表情包概率：%.0f%%  图片收藏：%s" % (
         STICKER_CHANCE * 100, "开" if MEDIA_COLLECT else "关"))
+
+    # 先把「注定失败」的情况说清楚（没管理员 / 窗口在托盘）
+    preflight_check()
     aliases = ((cfg.get("persona") or {}).get("aliases") or []) + [
         ((cfg.get("persona") or {}).get("name") or "鲸鲸")
     ]
@@ -1969,8 +2046,8 @@ def main():
     COLLECT_KINDS = _STORE_KINDS
 
     _media_store = _MediaStore(
-        data_dir=os.path.join(ROOT, "..", "data"),
-        phash_path=os.path.join(ROOT, "..", "data", "media-phash.json"),
+        data_dir=os.path.join(ROOT, "data"),
+        phash_path=os.path.join(ROOT, "data", "media-phash.json"),
         log=log,
     )
 
@@ -2983,7 +3060,7 @@ def main():
             log("表情包连拍：%d 帧 → GIF %d KB" % (len(frames), len(gif) // 1024))
 
             try:
-                dbg = os.path.join(ROOT, "..", "data", "last-sticker-shot.gif")
+                dbg = os.path.join(ROOT, "data", "last-sticker-shot.gif")
                 with open(dbg, "wb") as f:
                     f.write(gif)
             except Exception:
@@ -3034,7 +3111,7 @@ def main():
                 data = buf.getvalue()
 
                 try:
-                    dbg = os.path.join(ROOT, "..", "data", "last-sticker-shot.jpg")
+                    dbg = os.path.join(ROOT, "data", "last-sticker-shot.jpg")
                     with open(dbg, "wb") as f:
                         f.write(data)
                 except Exception:
@@ -3061,7 +3138,7 @@ def main():
             return "", b"", b""
 
     def sticker_index_path():
-        return os.path.join(ROOT, "..", "data", "stickers", "index.json")
+        return os.path.join(ROOT, "data", "stickers", "index.json")
 
     def load_sticker_index():
         """读表情包描述索引：{文件名: {desc, tags, addedAt}}"""
@@ -3256,7 +3333,7 @@ def main():
           收到的图、她画的图，视觉效果和表情包没区别，
           只从 stickers 挑会让「素材库明明有图却发不出来」。
         """
-        base = os.path.join(ROOT, "..", "data")
+        base = os.path.join(ROOT, "data")
         pool = []
         # 顺序即优先级（stickers 是正牌表情包，排前面）
         for sub in ("stickers", "generated", "images"):
@@ -3401,7 +3478,7 @@ def main():
         if not safe:
             return ""
 
-        base = os.path.join(ROOT, "..", "data")
+        base = os.path.join(ROOT, "data")
         for sub in ("generated", "stickers", "images"):
             p = os.path.join(base, sub, safe)
             if os.path.isfile(p):
@@ -4366,7 +4443,7 @@ def main():
 
             payload = {
                 "root": os.path.dirname(ROOT),
-                "dataDir": os.path.abspath(os.path.join(ROOT, "..", "data")),
+                "dataDir": os.path.abspath(os.path.join(ROOT, "data")),
                 "bridgeFile": os.path.abspath(__file__),
                 "hasGif": True,
                 "pid": os.getpid(),
@@ -4379,16 +4456,18 @@ def main():
             if j.get("dataDirMismatch"):
                 log("")
                 log("=" * 56)
-                log("⚠ 目录不一致！")
-                log("  桥接数据目录： %s" % payload["dataDir"])
+                log("[!] 目录不一致！")
+                log("  适配器数据目录： %s" % payload["dataDir"])
                 log("  服务数据目录： %s" % j.get("serverDataDir"))
-                log("  两边不是同一份安装 —— 素材会存到桥接那边，")
-                log("  控制台却读服务那边，于是「收藏了却看不到」。")
-                log("  解决：从服务所在目录启动桥接。")
+                log("  素材现在由核心统一存（POST /api/media/ingest），")
+                log("  目录不一致不影响收藏；但如果核心是旧版本，")
+                log("  会出现「收藏了却看不到」，那时才需要对齐目录。")
                 log("=" * 56)
                 log("")
             else:
-                log("启动自检：目录一致（%s）" % payload["dataDir"])
+                # 素材已改由核心存，目录不再需要一致，
+                # 这里只报自己的本地兜底目录，不做「一致」的判断
+                log("启动自检：本地兜底目录 %s" % payload["dataDir"])
 
             # 版本标记。
             #
