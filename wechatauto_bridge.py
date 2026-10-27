@@ -66,6 +66,60 @@ ACCOUNT_NAME = ""
 _RECENT_MSGS = {"n": 0, "since": 0.0}
 
 
+def core_pick_sticker(text=""):
+    """问核心挑一张表情包（按语气）。返回文件名，失败返回空串。
+
+    素材库在核心那边。适配器只是「发」的人，不该自己维护一份图库。
+    """
+    try:
+        import requests as _requests
+        import urllib.parse as _up
+
+        tok = _adapter_token()
+        url = bot_base().rstrip("/") + "/api/media/pick?text=" + _up.quote(str(text or ""))
+        r = _requests.get(url, headers={"x-adapter-token": tok} if tok else {}, timeout=10)
+        if not r.ok:
+            return ""
+        j = r.json() or {}
+        return str(j.get("name") or "") if j.get("ok") else ""
+    except Exception:                              # noqa: BLE001
+        return ""
+
+
+def core_fetch_media(name, kind="stickers"):
+    """从核心下载一个素材文件到本地临时目录，返回路径。
+
+    发图必须给 UIA 一个本地路径，不能直接喂 URL。
+    """
+    try:
+        import requests as _requests
+        import urllib.parse as _up
+
+        safe = os.path.basename(str(name or "").strip())
+        if not safe:
+            return ""
+
+        cache = os.path.join(ROOT, "data", "media-cache")
+        os.makedirs(cache, exist_ok=True)
+        dest = os.path.join(cache, safe)
+        if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+            return dest                               # 已经下过
+
+        tok = _adapter_token()
+        url = (bot_base().rstrip("/") + "/api/media/file/" + kind + "/" + _up.quote(safe))
+        r = _requests.get(url, headers={"x-adapter-token": tok} if tok else {}, timeout=30)
+        if not r.ok or not r.content:
+            return ""
+
+        tmp = dest + ".part"
+        with open(tmp, "wb") as f:
+            f.write(r.content)
+        os.replace(tmp, dest)
+        return dest
+    except Exception:                              # noqa: BLE001
+        return ""
+
+
 def _adapter_token():
     """核心要求的适配器令牌（读不到就返回空串，核心那边会按未授权处理）。"""
     return ADAPTER_TOKEN
@@ -3347,11 +3401,10 @@ def main():
             return _rnd.choice(pool)
 
     def sticker_pool():
-        """素材库里所有能当表情包发的图（不只是 stickers 目录）。
+        """素材库里所有能当表情包发的图。
 
-        为什么要合并三个目录：
-          收到的图、她画的图，视觉效果和表情包没区别，
-          只从 stickers 挑会让「素材库明明有图却发不出来」。
+        素材库归核心管，所以先问核心要一张（有语气就按语气挑）；
+        核心没回应才退回本地目录，本地也没有就返回空。
         """
         base = os.path.join(ROOT, "data")
         pool = []
@@ -3392,13 +3445,24 @@ def main():
                     log("要发的图不存在：%s" % specific_path)
                     return False
             else:
-                files = sticker_pool()
-                if not files:
-                    log("素材库里没有任何图可发")
-                    return False
+                # 素材库归核心管：先让核心按语气挑一张，再下载下来
+                path = ""
+                core_name = core_pick_sticker(context)
+                if core_name:
+                    path = core_fetch_media(core_name)
+                    if path:
+                        log("表情包：核心挑了 %s" % core_name)
+                    else:
+                        log("表情包：核心给了文件名但下载失败（%s）" % core_name)
 
-                # 按回复的语气挑，匹配不上才随机
-                path = pick_sticker_by_text(context, files) or _rnd.choice(files)
+                # 核心没回应就退回本地目录
+                if not path:
+                    files = sticker_pool()
+                    if not files:
+                        log("素材库里没有任何图可发（核心没回应，本地也没有）")
+                        return False
+                    # 按回复的语气挑，匹配不上才随机
+                    path = pick_sticker_by_text(context, files) or _rnd.choice(files)
 
             # 和 send_text 一样，用 gui 对象发送（统一走剪贴板粘贴路线）
             if gui is None:
@@ -3497,6 +3561,12 @@ def main():
         safe = os.path.basename(str(name or "").strip())
         if not safe:
             return ""
+
+        # 核心那边有图就下过来（本地没有是常态：素材库在核心）
+        for sub in ("generated", "stickers", "images"):
+            got = core_fetch_media(safe, sub)
+            if got:
+                return got
 
         base = os.path.join(ROOT, "data")
         for sub in ("generated", "stickers", "images"):
