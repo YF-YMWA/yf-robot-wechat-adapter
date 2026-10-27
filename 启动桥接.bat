@@ -9,7 +9,7 @@ REM  这个适配器违反微信用户协议，有封号风险。
 REM  仅供个人学习研究，风险自负。
 REM ============================================
 
-REM --no-elevate：跳过提权（测试用；普通权限下能收消息但发不出去）
+REM --no-elevate：跳过提权（排查用；普通权限能收消息但发不出去）
 if "%~1"=="--no-elevate" goto run
 
 net session >nul 2>&1
@@ -39,12 +39,19 @@ echo  [!] 违反微信用户协议，有封号风险，仅供学习研究
 echo.
 
 REM ===== 找 Python =====
-REM 坑：系统 PATH 里那个 C:\...\WindowsApps\python.exe 是微软商店的假壳，
+REM 坑：系统 PATH 里那个 WindowsApps\python.exe 是微软商店的假壳，
 REM     执行它只会弹商店或者直接失败（退出码 9009）。
-REM     顺序：自带运行时 > 隔壁主项目的运行时 > 真正的 PATH python > 常见安装位置
+REM 顺序：
+REM   1. 自己目录里带 runtime（独立发行包）
+REM   2. 上一级的 runtime（被塞进 YF-Robot 包里的 adapter 目录）
+REM   3. 隔壁 YF-Robot 项目（开发机布局）
+REM   4. PATH 里真正的 python（跳过商店假壳）
+REM   5. 常见安装位置
 set "PY="
 
 if exist "%~dp0runtime\python\python.exe" set "PY=%~dp0runtime\python\python.exe"
+
+if not defined PY if exist "%~dp0..\runtime\python\python.exe" set "PY=%~dp0..\runtime\python\python.exe"
 
 if not defined PY if exist "%~dp0..\YF-Robot\runtime\python\python.exe" set "PY=%~dp0..\YF-Robot\runtime\python\python.exe"
 
@@ -74,8 +81,8 @@ if not defined PY (
     echo  这个适配器需要 Python 3.10 以上，并且要装几个库：
     echo      pip install wechatauto-replica requests pillow pywin32 comtypes cryptography numpy
     echo.
-    echo  如果主项目 YF-Robot 就在旁边，它自带了 Python，
-    echo  适配器放在它旁边（同一个父目录）就能自动找到。
+    echo  如果你把适配器放在 YF-Robot 包里的 adapter 目录，
+    echo  或者放在 YF-Robot 项目旁边，都能自动找到它自带的 Python。
     echo.
     pause
     exit /b 1
@@ -88,8 +95,7 @@ if errorlevel 1 (
     echo  [错误] 找到了 %PY%
     echo         但它跑不起来（多半是微软商店的占位程序）
     echo.
-    echo  请装一个真的 Python 3.10+，或者用主项目自带的运行时：
-    echo      ..\YF-Robot\runtime\python\python.exe
+    echo  请装一个真的 Python 3.10+，或者用 YF-Robot 自带的运行时。
     echo.
     pause
     exit /b 1
@@ -125,7 +131,6 @@ if "%RC%"=="9009" (
     echo         路径: %PY%
     echo.
     echo  这个路径要么不存在，要么是微软商店的占位程序。
-    echo  解决办法：用主项目自带的运行时，或者装一个真正的 Python 3.10+。
     echo.
     pause
     goto done
