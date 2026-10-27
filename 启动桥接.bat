@@ -61,6 +61,9 @@ if not exist "config.json" (
     exit /b 1
 )
 
+REM 核心地址（config.json 里的 yfRobot.baseUrl 优先；这里只是兜底）
+if not defined WHALE_BOT_URL set "WHALE_BOT_URL=http://127.0.0.1:8899/api/wechat"
+
 set "TRIES=0"
 :restart
 "%PY%" wechatauto_bridge.py

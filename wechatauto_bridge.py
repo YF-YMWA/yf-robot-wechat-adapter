@@ -608,8 +608,26 @@ def read_config():
 
 
 def build_bot_url(cfg):
-    port = (cfg.get("server") or {}).get("port", 8787)
-    return os.environ.get("WHALE_BOT_URL", "http://127.0.0.1:%s/webhook/wechat" % port)
+    """核心地址。优先级：配置 > 环境变量 > 默认。
+
+    以前只看环境变量 WHALE_BOT_URL，没设就退回 `http://127.0.0.1:<本机 server.port>/webhook/wechat`
+    —— 那是原版 whale-girl 的路径，YF-Robot 根本没有 `/webhook/wechat`，
+    结果一启动就是满屏 404，看起来像「核心没反应」。
+
+    现在：
+      config.json 里 `yfRobot.baseUrl`（推荐，改了不用动环境变量）
+      → 环境变量 WHALE_BOT_URL（老启动脚本兼容）
+      → 默认 http://127.0.0.1:8899/api/wechat
+    """
+    yf = (cfg.get("yfRobot") or {}).get("baseUrl")
+    if yf:
+        return str(yf).rstrip("/")
+
+    env = os.environ.get("WHALE_BOT_URL")
+    if env:
+        return env
+
+    return "http://127.0.0.1:8899/api/wechat"
 
 
 # 当前使用的YF-Robot 地址。main() 里会赋值；放在模块级是为了让 bot_base()
