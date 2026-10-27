@@ -71,6 +71,45 @@ def _adapter_token():
     return ADAPTER_TOKEN
 
 
+def pull_policy():
+    """从核心拉收藏策略（GET /api/media/policy），覆盖本地那份。
+
+    为什么要这么做：
+      控制台「主人设置 / 表情包概率」写的是**核心的** config.json。
+      但发不发表情、收不收图是适配器在决定 —— 两边各存一份的话，
+      在控制台把概率从 0 调到 1 完全没反应，用户只会觉得「设置坏了」。
+
+    所以以核心为准：心跳循环里每 20 秒拉一次，改完 20 秒内生效。
+    核心不可达就继续用本地值（本地兜底路径要用到）。
+    """
+    global STICKER_CHANCE, MEDIA_COLLECT, COLLECT_WHITELIST
+    try:
+        # requests 只在 main() 里 import，模块级函数要用得自己进来
+        import requests as _requests
+
+        tok = _adapter_token()
+        r = _requests.get(
+            bot_base().rstrip("/") + "/api/media/policy",
+            headers={"x-adapter-token": tok} if tok else {},
+            timeout=8,
+        )
+        if not r.ok:
+            return False
+        j = r.json() or {}
+        if not j.get("ok"):
+            return False
+
+        if isinstance(j.get("stickerChance"), (int, float)):
+            STICKER_CHANCE = max(0.0, min(1.0, float(j["stickerChance"])))
+        if isinstance(j.get("collect"), bool):
+            MEDIA_COLLECT = j["collect"]
+        if isinstance(j.get("collectOnlyFrom"), list):
+            COLLECT_WHITELIST = [str(x).strip() for x in j["collectOnlyFrom"] if str(x).strip()]
+        return True
+    except Exception:                              # noqa: BLE001
+        return False
+
+
 def recent_msg_count():
     """最近一分钟处理了多少条消息。
 
@@ -1961,26 +2000,22 @@ def main():
     def save_media(raw, ext, kind, chat_username, sender_id, note=""):
         """把一份图片数据收进素材库。
 
-        现在优先**上传给核心**（POST /api/media/ingest）：
+        优先**上传给核心**（POST /api/media/ingest）：
         适配器已经是独立仓库，它这边算出来的 data/ 不是核心的 data/，
         自己写文件的结果就是「收藏了但控制台看不到」。
         核心那边负责：白名单判断、去重（md5 + dHash）、落盘、打描述。
 
+        **收藏白名单只由核心判断**（在控制台「主人设置」里改）。
+        适配器本地那份 COLLECT_WHITELIST 只用于核心不可达时的兜底 ——
+        之前两边各判一次，核心又不再同步这个字段，结果就是
+        「核心放行的图被适配器拦掉」或者反过来，很难查。
+
         核心不可达时才退回本地 MediaStore —— 至少不会把图丢了，
-        而且日志会写明「本地兜底」，方便排查。
+        日志会写明「本地兜底」，方便排查。
 
         @returns 保存的文件名；没收藏返回空字符串
         """
-        if not MEDIA_COLLECT:
-            return ""
-
-        if not _is_collect_allowed(chat_username, sender_id):
-            log("%s不收藏（发送者未授权）：%s" % (
-                "表情包" if kind == "sticker" else "图片",
-                sender_id or "?"))
-            return ""
-
-        # ---- 优先：交给核心存 ----
+        # ---- 优先：交给核心存（它来判白名单和开关）----
         try:
             import base64 as _b64
 
@@ -2013,6 +2048,18 @@ def main():
             log("上传核心失败，改本地兜底：", repr(e))
 
         # ---- 兜底：本地存 ----
+        # 走到这里说明核心没应答。白名单只能按本地这份配置判（可能已经过期），
+        # 所以日志要写明是兜底，别让人以为是正常路径。
+        if not MEDIA_COLLECT:
+            log("核心不可达，且本地关闭了收藏，这张图不存")
+            return ""
+
+        if not _is_collect_allowed(chat_username, sender_id):
+            log("%s不收藏（本地兜底 + 发送者不在白名单）：%s" % (
+                "表情包" if kind == "sticker" else "图片",
+                sender_id or "?"))
+            return ""
+
         _media_store.allow = None            # 权限上面已经判过了
         return _media_store.save(raw, ext, kind, chat_username, sender_id, note)
 
@@ -4233,6 +4280,9 @@ def main():
                 if token:
                     headers["x-bot-token"] = token
                 requests.post(base + "/api/bridge/heartbeat", json=payload, headers=headers, timeout=8)
+
+                # 顺手把核心那边的收藏策略拉下来（控制台改了要能生效）
+                pull_policy()
             except Exception:
                 pass  # 服务没起来/重启中，下一轮再报
             time.sleep(20)
