@@ -10,7 +10,7 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, '..', '..', 'jingjing', 'runtime', 'python', 'Lib', 'site-packages'))
+sys.path.insert(0, os.path.join(HERE, '..', '..', 'YF-Robot', 'runtime', 'python', 'Lib', 'site-packages'))
 
 
 def main():

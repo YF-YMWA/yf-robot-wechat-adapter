@@ -46,7 +46,7 @@ set "PY="
 
 if exist "%~dp0runtime\python\python.exe" set "PY=%~dp0runtime\python\python.exe"
 
-if not defined PY if exist "%~dp0..\jingjing\runtime\python\python.exe" set "PY=%~dp0..\jingjing\runtime\python\python.exe"
+if not defined PY if exist "%~dp0..\YF-Robot\runtime\python\python.exe" set "PY=%~dp0..\YF-Robot\runtime\python\python.exe"
 
 if not defined PY (
     for /f "delims=" %%P in ('where python 2^>nul') do (
@@ -89,7 +89,7 @@ if errorlevel 1 (
     echo         但它跑不起来（多半是微软商店的占位程序）
     echo.
     echo  请装一个真的 Python 3.10+，或者用主项目自带的运行时：
-    echo      ..\jingjing\runtime\python\python.exe
+    echo      ..\YF-Robot\runtime\python\python.exe
     echo.
     pause
     exit /b 1

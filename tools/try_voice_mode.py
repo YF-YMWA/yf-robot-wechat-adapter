@@ -11,7 +11,7 @@ import time
 import ctypes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, '..', '..', 'jingjing', 'runtime', 'python', 'Lib', 'site-packages'))
+sys.path.insert(0, os.path.join(HERE, '..', '..', 'YF-Robot', 'runtime', 'python', 'Lib', 'site-packages'))
 
 # 先声明 DPI 感知，坐标才和截图一致
 try:

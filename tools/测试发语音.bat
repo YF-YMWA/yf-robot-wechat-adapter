@@ -24,7 +24,7 @@ powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
 exit /b
 
 :run
-set "PY=%~dp0..\..\jingjing\runtime\python\python.exe"
+set "PY=%~dp0..\..\YF-Robot\runtime\python\python.exe"
 if not exist "%PY%" set "PY="
 if not defined PY (
     for %%D in (

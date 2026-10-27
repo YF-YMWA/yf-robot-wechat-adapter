@@ -11,7 +11,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(HERE, '..', '..', 'jingjing', 'runtime', 'python', 'Lib', 'site-packages'))
+sys.path.insert(0, os.path.join(HERE, '..', '..', 'YF-Robot', 'runtime', 'python', 'Lib', 'site-packages'))
 
 KEYWORDS = ['语音', '录音', '说话', '按住', '麦克风', 'voice', 'record', 'mic', '音频']
 
