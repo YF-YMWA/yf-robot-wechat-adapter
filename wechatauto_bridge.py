@@ -120,6 +120,46 @@ def core_fetch_media(name, kind="stickers"):
         return ""
 
 
+def core_tts(text):
+    """让核心把文字合成语音，返回本地文件路径（失败返回空串）。
+
+    微信自动化只能把音频**当文件**发出去（库里没有发语音条的接口），
+    所以这里拿到 amr/wav 后走 send_file。
+    """
+    try:
+        import base64 as _b64
+        import requests as _requests
+
+        tok = _adapter_token()
+        r = _requests.post(
+            bot_base().rstrip("/") + "/api/tts",
+            json={"text": str(text or "")},
+            headers={"x-adapter-token": tok} if tok else {},
+            timeout=90,
+        )
+        j = r.json() if r.ok else {}
+        if not j.get("ok"):
+            log("语音合成失败：", j.get("error") or ("HTTP %s" % r.status_code))
+            return ""
+
+        data = j.get("data")
+        if not data:
+            log("语音合成成功但没返回音频数据")
+            return ""
+
+        cache = os.path.join(ROOT, "data", "media-cache")
+        os.makedirs(cache, exist_ok=True)
+        name = j.get("name") or ("tts_%d.%s" % (int(time.time()), j.get("ext") or "wav"))
+        dest = os.path.join(cache, os.path.basename(name))
+        with open(dest, "wb") as f:
+            f.write(_b64.b64decode(data))
+        log("语音合成完成：%s（%d KB）" % (os.path.basename(dest), os.path.getsize(dest) // 1024))
+        return dest
+    except Exception as e:                          # noqa: BLE001
+        log("语音合成异常：", repr(e))
+        return ""
+
+
 def _adapter_token():
     """核心要求的适配器令牌（读不到就返回空串，核心那边会按未授权处理）。"""
     return ADAPTER_TOKEN
@@ -159,6 +199,9 @@ def pull_policy():
             MEDIA_COLLECT = j["collect"]
         if isinstance(j.get("collectOnlyFrom"), list):
             COLLECT_WHITELIST = [str(x).strip() for x in j["collectOnlyFrom"] if str(x).strip()]
+        global VOICE_CHANCE
+        if isinstance(j.get("voiceChance"), (int, float)):
+            VOICE_CHANCE = max(0.0, min(1.0, float(j["voiceChance"])))
     except Exception:                              # noqa: BLE001
         pass
 
@@ -244,6 +287,9 @@ STALE_AFTER = float(os.environ.get("WHALE_STALE_AFTER", "4"))
 
 # 每次回复后补一个表情包的概率（0 = 关闭，1 = 每次都发）
 STICKER_CHANCE = float(os.environ.get("WHALE_STICKER_CHANCE", "0"))
+
+# 回复改成发语音的概率（0 = 不发）。由核心的 /api/media/policy 下发。
+VOICE_CHANCE = float(os.environ.get("WHALE_VOICE_CHANCE", "0"))
 
 # 是否收藏收到的图片（存到 data/images/，控制台可查看）
 MEDIA_COLLECT = os.environ.get("WHALE_MEDIA_COLLECT", "1") not in ("0", "false", "no")
@@ -4014,6 +4060,31 @@ def main():
                     log("[发图] %s → %s" % (_name, "成功" if _ok else "失败"))
             except Exception as _e:                  # noqa: BLE001
                 log("发指定图失败（不影响文字回复）：", repr(_e))
+
+            # 有概率把这条回复再补一遍语音（合成后当音频文件发）
+            #
+            # 为什么是「补一遍」而不是「改用语音」：
+            #   微信自动化发不了语音条气泡（库只支持 send_file），
+            #   发成文件对方要主动点开才听得到，所以文字照常发，
+            #   语音作为补充。概率由控制台「语音概率」控制。
+            try:
+                if VOICE_CHANCE > 0 and random.random() < VOICE_CHANCE:
+                    _ctx = " ".join(str(b) for b in (data.get("bubbles") or []))[:200]
+                    if _ctx:
+                        log("[语音] chance=%.2f 命中，合成中…" % VOICE_CHANCE)
+                        _vp = core_tts(_ctx)
+                        if _vp:
+                            time.sleep(0.8)
+                            # gui 可能还没建（纯文本回复不会建），这里自己兜一下。
+                            # 用局部变量，不改外层 gui，避免作用域问题。
+                            _g = gui if gui is not None else WeChatGUI()
+                            _r = _g.send_file(_vp, who=target, verify=False)
+                            _okv = getattr(_r, "success", None)
+                            if _okv is None:
+                                _okv = bool(_r)
+                            log("[语音] 发送结果：%s" % ("成功" if _okv else "失败"))
+            except Exception as _e:                  # noqa: BLE001
+                log("发语音失败（不影响文字回复）：", repr(_e))
 
             # 回复完后，有一定概率补一个表情包（微信发不了动作表情，用 GIF 代替）
             try:
