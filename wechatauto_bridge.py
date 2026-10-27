@@ -159,6 +159,56 @@ def pull_policy():
             MEDIA_COLLECT = j["collect"]
         if isinstance(j.get("collectOnlyFrom"), list):
             COLLECT_WHITELIST = [str(x).strip() for x in j["collectOnlyFrom"] if str(x).strip()]
+    except Exception:                              # noqa: BLE001
+        pass
+
+    # 主人名单 / 主动功能也以核心为准
+    return pull_owner_config()
+
+
+def pull_owner_config():
+    """从核心拉主人名单和主动功能设置（GET /api/adapter/config）。
+
+    这些以前在适配器自己的 config.json 里也存一份，结果两边各改各的：
+      · 适配器的 persona.master.wxids 是空的 → 每日热点永远不发
+      · 控制台把「主动搭话」关了，适配器那边还开着 → 还在乱发
+    现在统一由核心提供，适配器每 20 秒覆盖一次。
+    """
+    global MASTER_WXID, CARE_ENABLED, SHARE_ENABLED, DIGEST_MINUTES
+
+    try:
+        import requests as _requests
+
+        tok = _adapter_token()
+        r = _requests.get(
+            bot_base().rstrip("/") + "/api/adapter/config",
+            headers={"x-adapter-token": tok} if tok else {},
+            timeout=8,
+        )
+        if not r.ok:
+            return False
+        j = r.json() or {}
+        if not j.get("ok"):
+            return False
+
+        owner = j.get("owner") or {}
+        wxids = [str(x).strip() for x in (owner.get("wxids") or []) if str(x).strip()]
+        if wxids:
+            MASTER_WXID = wxids[0]
+
+        care = j.get("care") or {}
+        if isinstance(care.get("enabled"), bool):
+            CARE_ENABLED = care["enabled"]
+
+        share = j.get("share") or {}
+        if isinstance(share.get("enabled"), bool):
+            SHARE_ENABLED = share["enabled"]
+
+        digest = j.get("digest") or {}
+        if digest.get("enabled") is False:
+            DIGEST_MINUTES = 0          # 0 = 关掉每日热点
+        elif isinstance(digest.get("intervalHours"), (int, float)):
+            DIGEST_MINUTES = float(digest["intervalHours"]) * 60
         return True
     except Exception:                              # noqa: BLE001
         return False
