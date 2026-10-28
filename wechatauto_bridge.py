@@ -218,6 +218,7 @@ def pull_owner_config():
     现在统一由核心提供，适配器每 20 秒覆盖一次。
     """
     global MASTER_WXID, CARE_ENABLED, SHARE_ENABLED, DIGEST_MINUTES
+    global PACE_BUBBLE_MS, PACE_PER_CHAR_MS, PACE_JITTER, PACE_MAX_MS
 
     try:
         import requests as _requests
@@ -252,6 +253,21 @@ def pull_owner_config():
             DIGEST_MINUTES = 0          # 0 = 关掉每日热点
         elif isinstance(digest.get("intervalHours"), (int, float)):
             DIGEST_MINUTES = float(digest["intervalHours"]) * 60
+
+        # 多条气泡之间的停顿：核心算好参数，适配器只管照做
+        pace = j.get("pace") or {}
+        v = pace.get("bubbleDelayMs")
+        if isinstance(v, (int, float)):
+            PACE_BUBBLE_MS = max(0.0, min(float(v), 5000.0))
+        v = pace.get("perCharMs")
+        if isinstance(v, (int, float)):
+            PACE_PER_CHAR_MS = max(0.0, min(float(v), 300.0))
+        v = pace.get("jitter")
+        if isinstance(v, (int, float)):
+            PACE_JITTER = max(0.0, min(float(v), 1.0))
+        v = pace.get("maxDelayMs")
+        if isinstance(v, (int, float)):
+            PACE_MAX_MS = max(0.0, min(float(v), 20000.0))
         return True
     except Exception:                              # noqa: BLE001
         return False
@@ -267,6 +283,24 @@ def recent_msg_count():
         _RECENT_MSGS["n"] = 0
         _RECENT_MSGS["since"] = now
     return int(_RECENT_MSGS["n"])
+
+
+def bubble_pause(text):
+    """算下一条气泡该等多久（秒）。
+
+    真人发消息不是一个字一个字匀速敲，而是「想一想 → 敲一段 → 发」：
+      · 基础间隔（思考）
+      · 加上按字数估的打字时间
+      · 再乘一个随机抖动，避免每条节奏一模一样
+      · 封顶，免得长句让人等太久
+    """
+    import random
+
+    base = PACE_BUBBLE_MS / 1000.0
+    typing = len(str(text or "")) * (PACE_PER_CHAR_MS / 1000.0)
+    raw = base + typing
+    j = 1.0 + random.uniform(-PACE_JITTER, PACE_JITTER)
+    return max(0.15, min(raw * j, PACE_MAX_MS / 1000.0))
 
 
 def note_msg():
@@ -322,6 +356,16 @@ CARE_ENABLED = True
 CARE_QUIET_MIN = 20.0
 DIGEST_MINUTES = 30.0
 MASTER_WXID = ""
+
+# 多条气泡之间的停顿（由核心通过 /api/adapter/config 下发）
+#   bubbleDelayMs 每条之间的基准间隔
+#   perCharMs     每个字再加多少（打字速度）
+#   jitter        随机抖动比例
+#   maxDelayMs    单条最多等多久
+PACE_BUBBLE_MS = 400.0
+PACE_PER_CHAR_MS = 45.0
+PACE_JITTER = 0.35
+PACE_MAX_MS = 6000.0
 
 try:
     # 读本目录的 config.json（原版是 ../config.json，被复制成独立副本后
@@ -4042,7 +4086,8 @@ def main():
                         line = "@%s %s" % (mention, line)
                 send_text(line, target, username, quote_text=(content if first and QUOTE_REPLY else None))
                 first = False
-                time.sleep(0.6)
+                # 按字数估打字时间 + 随机抖动（以前是写死的 0.6 秒，三条几乎同时到）
+                time.sleep(bubble_pause(line))
 
             # 她要发的指定图（画完想发出去时，鲸鲸会在回复里带 images 字段）
             try:
