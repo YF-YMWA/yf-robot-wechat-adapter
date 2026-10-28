@@ -1002,8 +1002,29 @@ def send_allowed():
     """连续失败进入冷却后，就别再折腾微信窗口了。"""
     left = SEND_HEALTH["cooldown"] - time.time()
     if left > 0:
-        return False, "连续失败冷却中，还剩 %d 秒" % int(left)
+        # 用 ceil：之前 int() 会显示「还剩 0 秒」却还在挡，看着像 bug
+        return False, "连续失败冷却中，还剩 %d 秒" % max(1, int(-(-left // 1)))
     return True, ""
+
+
+def account_send_result(ok, err=""):
+    """按「一条消息」记账，而不是按「一次尝试」。
+
+    with_window_on_top 一条消息会走 2~3 次，按它记账会让一条消息失败就进冷却。
+    """
+    try:
+        import ctypes as _ct
+
+        is_admin = bool(_ct.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        is_admin = True
+
+    # 非管理员时 UIA 必失败，那是权限问题 —— 不参与熔断，免得把正常发送也停了
+    if not ok and not is_admin:
+        log("[权限] 当前不是管理员，UIA 发不出去是正常的；不计入熔断")
+        return
+
+    note_send_result(ok, err)
 
 
 def note_send_result(ok, err=""):
@@ -1813,11 +1834,8 @@ def main():
             ok = bool(force_send_foreground(fn))
             return ok
         finally:
-            # 统一记账：成功清连败计数，失败累计 —— 连败三次就冷却（note_send_result 里）
-            try:
-                note_send_result(ok)
-            except Exception:
-                pass
+            # 这里**不记账**：一条消息会调用本函数 2~3 次（重试/重新激活），
+            # 按次数记账会让单条消息失败就触发冷却。记账在 send_text 的最终分支。
             if BACKGROUND_SEND:
                 restore_win_state(snap)
             SEND_STATE["active"] = False
@@ -2329,6 +2347,7 @@ def main():
                 if fail_streak[chat_username] >= 2:
                     dead_chats.add(chat_username)
                     log("连续发送失败，先停掉这个会话：", chat_display_name)
+            account_send_result(False, "send_text 最终失败")
             log("发送最终失败，请把微信窗口保持在桌面、别最小化；内容：", text[:30])
             return False
 
@@ -4793,6 +4812,13 @@ def main():
                     # 否则控制台「接入状态」页会是空的
                     "account": ACCOUNT_NAME,
                     "recentMessages": recent_msg_count(),
+                    # 发送健康度：连续失败冷却时，面板能直接看出「不是没收到，是发不出去」
+                    "send": {
+                        "ok": SEND_HEALTH.get("ok", 0),
+                        "fail": SEND_HEALTH.get("fail", 0),
+                        "cooldownSec": max(0, int(SEND_HEALTH.get("cooldown", 0) - time.time())),
+                        "lastError": SEND_HEALTH.get("last_error", ""),
+                    },
                 }
                 headers = {"x-whale-bridge": "1"}
                 if token:
