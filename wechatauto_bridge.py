@@ -363,6 +363,11 @@ RETURN_NOTICE = True
 QUEUED_MAX_AGE = 300.0
 QUEUED_MAX_CHATS = 2
 QUOTE_REPLY = True
+# 微信多开时是否拒绝发送（防串号，见 count_weixin_main_windows）
+REFUSE_ON_MULTI_ACCOUNT = bool(
+    # 默认开：发错号比不发严重得多
+    True
+)
 KEYBOARD_FALLBACK = True
 BACKGROUND_SEND = True
 LOW_BATTERY_PCT = 5.0
@@ -416,6 +421,7 @@ try:
     QUOTE_REPLY = bool(_wechat.get("quoteReply", True))
     # UIA 彻底发不出去时，退到「Ctrl+F 搜索会话 → 粘贴 → 回车」的键盘通道（会抢前台）
     KEYBOARD_FALLBACK = bool(_wechat.get("keyboardFallback", True))
+    REFUSE_ON_MULTI_ACCOUNT = bool(_wechat.get("refuseOnMultiAccount", True))
     # 后台发送：不抢前台直接发（实测最小化/被遮挡也能发）。false = 每次先把微信拉到前台
     BACKGROUND_SEND = bool(_wechat.get("backgroundSend", True))
     LOW_BATTERY_PCT = float(_wechat.get("lowBatteryPercent", 5))
@@ -455,7 +461,7 @@ def reload_config(path=None):
 
     返回是否真的重新加载了。
     """
-    global GAME_TOKENS, AWAY_NOTICE, RETURN_NOTICE, QUEUED_MAX_AGE, QUEUED_MAX_CHATS
+    global REFUSE_ON_MULTI_ACCOUNT, GAME_TOKENS, AWAY_NOTICE, RETURN_NOTICE, QUEUED_MAX_AGE, QUEUED_MAX_CHATS
     global QUOTE_REPLY, KEYBOARD_FALLBACK, BACKGROUND_SEND, LOW_BATTERY_PCT, GOODNIGHT_TEXT
     global SHARE_ENABLED, SHARE_EVERY, CARE_ENABLED, CARE_QUIET_MIN, DIGEST_MINUTES
     global STALE_AFTER, SYSTEM_SENDER_NAMES, BASE_SYSTEM_SENDERS, MASTER_WXID
@@ -503,6 +509,7 @@ def reload_config(path=None):
         pass
     QUOTE_REPLY = bool(w.get("quoteReply", True))
     KEYBOARD_FALLBACK = bool(w.get("keyboardFallback", True))
+    REFUSE_ON_MULTI_ACCOUNT = bool(w.get("refuseOnMultiAccount", True))
     BACKGROUND_SEND = bool(w.get("backgroundSend", True))
     GOODNIGHT_TEXT = str(w.get("goodnightText") or GOODNIGHT_TEXT)
     try:
@@ -1635,6 +1642,66 @@ def main():
             return True
 
     # ---------- 微信窗口置顶（关键：别的窗口挡在微信上面会导致打字落空） ----------
+    def count_weixin_main_windows():
+        """数一下有几个「像微信主窗」的窗口。
+
+        双开时会 ≥2。用它防串号：读的是这个号的库，绝不能发到另一个号的窗口。
+        """
+        try:
+            import win32gui
+            import win32process
+            import psutil
+        except Exception:
+            return -1
+
+        BAD_CLASS = ("trayicon", "messagewindow", "msctf", "sopy", "sogou", "hintwnd", "default ime", "notifyicon")
+        found = []
+
+        def cb(h, _):
+            try:
+                title = (win32gui.GetWindowText(h) or "").strip()
+                cls = (win32gui.GetClassName(h) or "").lower()
+                if any(b in cls for b in BAD_CLASS):
+                    return
+                if "发送" in title or "助手" in title:
+                    return
+                _, pid = win32process.GetWindowThreadProcessId(h)
+                if pid <= 0:
+                    return
+                try:
+                    if not psutil.Process(pid).name().lower().startswith("weixin"):
+                        return
+                except Exception:
+                    return
+                rect = win32gui.GetWindowRect(h)
+                area = max(0, rect[2] - rect[0]) * max(0, rect[3] - rect[1])
+                if area < 300 * 250 and title != "微信":
+                    return
+                looks_main = title == "微信" or "qwindowicon" in cls or "mmui::mainwindow" in cls
+                if looks_main:
+                    found.append(h)
+            except Exception:
+                pass
+
+        try:
+            win32gui.EnumWindows(cb, None)
+        except Exception:
+            return -1
+        return len(found)
+
+    def multi_account_guard():
+        """多开时拒绝发送。返回 (ok, 原因)。"""
+        try:
+            n = count_weixin_main_windows()
+        except Exception:
+            return True, ""
+        if n <= 1:
+            return True, ""
+        msg = "检测到 %d 个微信主窗（多开）：为了不把话发到别的号，这次不发送" % n
+        log("[!] " + msg)
+        log("    要允许发送：在 config.json 里设 wechat.refuseOnMultiAccount = false")
+        return False, msg
+
     def find_weixin_hwnd():
         try:
             import win32gui
@@ -2241,6 +2308,12 @@ def main():
 
     def send_text(text, chat_display_name, chat_username="", force=False, quote_text=None):
         nonlocal gui
+
+        # 多开防串号：宁可这次不发，也别发到另一个号上
+        if REFUSE_ON_MULTI_ACCOUNT:
+            ok_multi, why = multi_account_guard()
+            if not ok_multi:
+                return False
         if chat_username and chat_username in dead_chats:
             log("跳过已失效的会话：", chat_display_name)
             return False
