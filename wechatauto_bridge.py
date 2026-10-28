@@ -2297,6 +2297,41 @@ def main():
                     except Exception as e:            # noqa: BLE001
                         log("重新激活后仍失败：", repr(e))
                 log("UIA 发不出去，跳过 OCR 兜底：", chat_display_name)
+
+            # ===== 兜底前先检查窗口状态 =====
+            #
+            # 用户提的：「发送失败检测窗口后再调用保险」。
+            # UIA 失败最常见的原因不是控件坏了，而是窗口不在可用状态：
+            # 最小化到托盘（坐标 -32000）、被全屏程序盖住、或者掉登录了。
+            # 不查状态直接走键盘兜底，等于闭眼乱按键。
+            try:
+                import win32gui as _wg
+                import win32con as _wc
+
+                hwnd = find_weixin_hwnd()
+                if not hwnd:
+                    log("[保险] 找不到微信窗口，可能掉登录/被关掉了 —— 这次不兜底")
+                    return False
+
+                rect = _wg.GetWindowRect(hwnd)
+                if _wg.IsIconic(hwnd) or rect[0] <= -30000 or rect[1] <= -30000:
+                    log("[保险] 微信在最小化/托盘里，先调出来再兜底")
+                    try:
+                        _wg.ShowWindow(hwnd, _wc.SW_RESTORE)
+                        time.sleep(0.35)
+                    except Exception as e:              # noqa: BLE001
+                        log("[保险] 调出窗口失败：", repr(e))
+
+                rect2 = _wg.GetWindowRect(hwnd)
+                if rect2[0] <= -30000 or rect2[1] <= -30000:
+                    log("[保险] 窗口仍在托盘（%d,%d），放弃这次发送" % (rect2[0], rect2[1]))
+                    return False
+                if rect2[2] - rect2[0] < 300 or rect2[3] - rect2[1] < 200:
+                    log("[保险] 微信窗口太小（%dx%d），放弃这次发送"
+                        % (rect2[2] - rect2[0], rect2[3] - rect2[1]))
+                    return False
+            except Exception as e:                      # noqa: BLE001
+                log("[保险] 窗口检查本身出错（继续尝试兜底）：", repr(e))
             else:
                 log("UIA 不可用，走 OCR 兜底")
             # ①.5 键盘兜底：完全不碰 accessibility（Ctrl+F 搜索会话 → 粘贴 → 回车），
@@ -2453,7 +2488,7 @@ def main():
 
     _media_store.on_forgotten = _drop_stale_index
 
-    def save_media(raw, ext, kind, chat_username, sender_id, note=""):
+    def save_media(raw, ext, kind, chat_username, sender_id, note="", name_hint=""):
         """把一份图片数据收进素材库。
 
         优先**上传给核心**（POST /api/media/ingest）：
@@ -2483,6 +2518,9 @@ def main():
                     "data": _b64.b64encode(raw).decode(),
                     "chatId": chat_username or "",
                     "senderId": sender_id or "",
+                    # 有 md5 时给个确定的名字：同一张表情重复收录会命中同名文件，
+                    # 核心侧按名字去重（不然每收一次就多一张）
+                    "name": (name_hint + ext) if name_hint else "",
                 },
                 headers={"x-adapter-token": tok} if tok else {},
                 timeout=30,
@@ -3284,6 +3322,35 @@ def main():
             log("表情包截图：置前微信失败", repr(e))
             return False
 
+    def capture_looks_valid(pil_img, rect):
+        """截下来的这块，像不像一个表情包。
+
+        为什么需要：定位不准时截到的是侧边栏、头像、或者聊天背景，
+        以前照样存进素材库，用户看到的就是「收进来的图不对」。
+
+        判据很朴素但有效：
+          · 尺寸不能太扁/太窄
+          · 不能是近乎纯色（空白、背景）—— 用像素标准差判断
+        """
+        try:
+            w, h = pil_img.size
+            if w < 40 or h < 40:
+                return False, "太小（%dx%d）" % (w, h)
+            if w / max(1, h) > 6 or h / max(1, w) > 6:
+                return False, "比例离谱（%dx%d）" % (w, h)
+
+            # 缩小后算亮度标准差：纯色区域方差极小
+            small = pil_img.convert("L").resize((32, 32))
+            px = list(small.getdata())
+            n = len(px)
+            mean = sum(px) / n
+            var = sum((p - mean) ** 2 for p in px) / n
+            if var < 30:                      # 实测纯背景大概 <10，真表情 200+
+                return False, "近乎纯色（方差 %.0f，可能截到了背景）" % var
+            return True, ""
+        except Exception as e:                # noqa: BLE001
+            return True, ""                   # 校验本身出错就放行，别误伤
+
     def capture_sticker_frames(who, count=8, interval=0.12):
         """连续截同一块区域，用来还原动图表情。
 
@@ -3326,6 +3393,14 @@ def main():
 
             if shot is None:
                 break
+
+            # 第一帧先验一下：定位不准的话后面几帧也是错的
+            if i == 0:
+                ok_cap, why = capture_looks_valid(shot, rect)
+                if not ok_cap:
+                    log("表情包截图：这一块不像表情（%s），rect=%r 尺寸=%r"
+                        % (why, rect, getattr(shot, "size", None)))
+                    return b"", ""
 
             # 裁掉消息行两侧的头像和空白
             try:
@@ -3893,11 +3968,16 @@ def main():
 
             # 收藏：不管走哪条路拿到图，都进素材库。
             # 之前只有「缓存解密成功」才收藏，截图路线拿到的图白扔了。
-            def collect(data, suffix=".jpg", desc=""):
+            def collect(data, suffix=".jpg", desc="", md5_hint=""):
                 if not data:
                     return
                 try:
-                    name = save_media(data, suffix, "sticker", chat_user, sender)
+                    # 有 md5 就按它命名：同一张表情重复收录会命中同名文件，
+                    # 核心侧按名字去重，不会变成两张
+                    name = save_media(
+                        data, suffix, "sticker", chat_user, sender,
+                        name_hint=("stk_" + md5_hint if md5_hint else ""),
+                    )
                     # 把识别结果记进索引，以后能按语气挑图
                     if name and desc:
                         index_sticker(name, desc)
