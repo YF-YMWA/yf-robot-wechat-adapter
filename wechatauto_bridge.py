@@ -66,7 +66,7 @@ ACCOUNT_NAME = ""
 _RECENT_MSGS = {"n": 0, "since": 0.0}
 
 
-def core_pick_sticker(text=""):
+def core_pick_sticker(text="", only_gif=False):
     """问核心挑一张表情包（按语气）。返回文件名，失败返回空串。
 
     素材库在核心那边。适配器只是「发」的人，不该自己维护一份图库。
@@ -76,7 +76,11 @@ def core_pick_sticker(text=""):
         import urllib.parse as _up
 
         tok = _adapter_token()
-        url = bot_base().rstrip("/") + "/api/media/pick?text=" + _up.quote(str(text or ""))
+        url = (
+            bot_base().rstrip("/")
+            + "/api/media/pick?text=" + _up.quote(str(text or ""))
+            + ("&gif=1" if only_gif else "")
+        )
         r = _requests.get(url, headers={"x-adapter-token": tok} if tok else {}, timeout=10)
         if not r.ok:
             return ""
@@ -3783,7 +3787,7 @@ def main():
                     pool.append(p)
         return pool
 
-    def send_sticker(chat_display_name, chat_username="", specific_path=None, context=""):
+    def send_sticker(chat_display_name, chat_username="", specific_path=None, context="", only_gif=False):
         """发一个表情包（从素材库挑，或发指定的那张）。
 
         微信不能发「动作表情」（加密专有格式），但能发 GIF/图片 ——
@@ -3809,7 +3813,7 @@ def main():
             else:
                 # 素材库归核心管：先让核心按语气挑一张，再下载下来
                 path = ""
-                core_name = core_pick_sticker(context)
+                core_name = core_pick_sticker(context, only_gif=only_gif)
                 if core_name:
                     path = core_fetch_media(core_name)
                     if path:
@@ -3874,7 +3878,14 @@ def main():
                             log("send_image 异常，回退 send_file：", repr(e))
                             return gui.send_file(p, chat_display_name)
 
-            r = _do_send(path)
+            # 发图也纳入看门狗监控：以前只有 with_window_on_top 会置位，
+            # 发图这条路卡死时看门狗看不见，进程就永久挂住。
+            SEND_STATE["active"] = True
+            SEND_STATE["start"] = time.time()
+            try:
+                r = _do_send(path)
+            finally:
+                SEND_STATE["active"] = False
             ok = bool(r and r.get("status") == "成功")
 
             # 失败时把底层返回原样记下来。
@@ -4454,7 +4465,11 @@ def main():
                     time.sleep(0.8)
                     # 把刚才的回复内容传进去，按语气挑图（而不是纯随机）
                     _ctx = " ".join(str(b) for b in (data.get("bubbles") or []))
-                    _sent = send_sticker(target, username, context=_ctx)
+                    # 核心说「用户点名要动图」→ 只挑 GIF
+                    _sent = send_sticker(
+                        target, username, context=_ctx,
+                        only_gif=bool(data.get("stickerGif")),
+                    )
                     log("[表情包] 发送结果：%s" % _sent)
             except Exception as _e:                  # noqa: BLE001
                 log("发表情包失败（不影响文字回复）：", repr(_e))
