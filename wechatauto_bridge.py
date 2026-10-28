@@ -285,6 +285,19 @@ def recent_msg_count():
     return int(_RECENT_MSGS["n"])
 
 
+def read_pause(text):
+    """回第一条之前「读一遍」要多久（秒）。
+
+    真人看到消息不会立刻回，要先看完、想一下再动手。
+    消息越长，读得越久；但封顶 2.5 秒，别让人等太久。
+    """
+    import random
+
+    n = len(str(text or ""))
+    base = 0.6 + min(n * 0.012, 1.6)      # 短消息约 0.6s，长消息最多 2.2s
+    return max(0.3, base * random.uniform(0.75, 1.25))
+
+
 def bubble_pause(text):
     """算下一条气泡该等多久（秒）。
 
@@ -977,6 +990,18 @@ def ensure_ffmpeg_env():
 
 def main():
     boot("进入 main()")
+
+    # 由面板启动时忽略 Ctrl+C：点窗口复制日志很容易误触，一按就把桥接退掉了。
+    # 手动双击启动时不设这个变量，Ctrl+C 照旧能退出。
+    if os.environ.get("YF_NO_SIGINT") == "1":
+        try:
+            import signal as _signal
+
+            _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
+            log("（面板启动：已忽略 Ctrl+C；要停止请点面板「停止」或关掉本窗口）")
+        except Exception:
+            pass
+
     # reload_config() 会写这几个全局变量，这里先声明清楚
     global STICKER_CHANCE, MEDIA_COLLECT, COLLECT_WHITELIST
     ensure_ffmpeg_env()
@@ -4066,6 +4091,13 @@ def main():
                 return
             log("回复", ("群" if is_group else "私聊"), target, "→", nickname, "：", (bubbles[0] or "")[:40])
 
+            # 发第一条之前先「读一遍」——真人不会秒回
+            try:
+                _said = data.get("reply") or " ".join(str(b) for b in bubbles[:2])
+                time.sleep(read_pause(_said))
+            except Exception:
+                pass
+
             first = True
             for line in bubbles:
                 if not line:
@@ -4113,21 +4145,36 @@ def main():
             #   发成文件对方要主动点开才听得到，所以文字照常发，
             #   语音作为补充。概率由控制台「语音概率」控制。
             try:
-                if VOICE_CHANCE > 0 and random.random() < VOICE_CHANCE:
-                    _ctx = " ".join(str(b) for b in (data.get("bubbles") or []))[:200]
-                    if _ctx:
-                        log("[语音] chance=%.2f 命中，合成中…" % VOICE_CHANCE)
-                        _vp = core_tts(_ctx)
-                        if _vp:
-                            time.sleep(0.8)
-                            # gui 可能还没建（纯文本回复不会建），这里自己兜一下。
-                            # 用局部变量，不改外层 gui，避免作用域问题。
-                            _g = gui if gui is not None else WeChatGUI()
-                            _r = _g.send_file(_vp, who=target, verify=False)
-                            _okv = getattr(_r, "success", None)
-                            if _okv is None:
-                                _okv = bool(_r)
-                            log("[语音] 发送结果：%s" % ("成功" if _okv else "失败"))
+                # 念哪一段、要不要念，**由核心决定**（data["voice"]）。
+                #
+                # 以前是适配器自己掷骰子、把整段原文拿去念，
+                # 结果把「（尾巴拍了拍）」和 emoji 一起念出来了。
+                # 现在核心清洗好、判断好，适配器只执行；没有 voice 字段就退回旧的随机逻辑。
+                _voice_spec = data.get("voice") if isinstance(data, dict) else None
+                _voice_text = ""
+                if isinstance(_voice_spec, dict):
+                    _voice_text = str(_voice_spec.get("text") or "").strip()
+                elif isinstance(_voice_spec, str):
+                    _voice_text = _voice_spec.strip()
+
+                if not _voice_text and VOICE_CHANCE > 0 and random.random() < VOICE_CHANCE:
+                    # 兼容老核心：没有 voice 字段时沿用原来的做法
+                    _voice_text = " ".join(str(b) for b in (data.get("bubbles") or []))[:200]
+
+                if _voice_text:
+                    _ctx = _voice_text
+                    log("[语音] 合成中…（%d 字）" % len(_ctx))
+                    _vp = core_tts(_ctx)
+                    if _vp:
+                        time.sleep(0.8)
+                        # gui 可能还没建（纯文本回复不会建），这里自己兜一下。
+                        # 用局部变量，不改外层 gui，避免作用域问题。
+                        _g = gui if gui is not None else WeChatGUI()
+                        _r = _g.send_file(_vp, who=target, verify=False)
+                        _okv = getattr(_r, "success", None)
+                        if _okv is None:
+                            _okv = bool(_r)
+                        log("[语音] 发送结果：%s" % ("成功" if _okv else "失败"))
             except Exception as _e:                  # noqa: BLE001
                 log("发语音失败（不影响文字回复）：", repr(_e))
 
