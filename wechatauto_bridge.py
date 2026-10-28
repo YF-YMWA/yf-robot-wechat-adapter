@@ -988,6 +988,93 @@ def ensure_ffmpeg_env():
     return False
 
 
+# ===== 发送健康度（熔断 / 剪贴板保护）=====
+SEND_HEALTH = {
+    "ok": 0,
+    "fail": 0,
+    "streak": 0,
+    "cooldown": 0.0,
+    "last_error": "",
+}
+
+
+def send_allowed():
+    """连续失败进入冷却后，就别再折腾微信窗口了。"""
+    left = SEND_HEALTH["cooldown"] - time.time()
+    if left > 0:
+        return False, "连续失败冷却中，还剩 %d 秒" % int(left)
+    return True, ""
+
+
+def note_send_result(ok, err=""):
+    """记一次发送结果；连败三次开始冷却，成功满 120 次重建 UIA 缓存。"""
+    global SEND_HEALTH
+    if ok:
+        SEND_HEALTH["ok"] = SEND_HEALTH.get("ok", 0) + 1
+        SEND_HEALTH["streak"] = 0
+        if SEND_HEALTH["ok"] % 120 == 0:
+            try:
+                UIA_CACHE["u"] = None
+                log("[稳定] 重建 UIA 缓存（累计成功 %d 次）" % SEND_HEALTH["ok"])
+            except Exception:
+                pass
+    else:
+        SEND_HEALTH["fail"] = SEND_HEALTH.get("fail", 0) + 1
+        SEND_HEALTH["streak"] = SEND_HEALTH.get("streak", 0) + 1
+        SEND_HEALTH["last_error"] = str(err)[:120]
+        if SEND_HEALTH["streak"] >= 3:
+            SEND_HEALTH["cooldown"] = time.time() + 60
+            SEND_HEALTH["streak"] = 0
+            log("[!] 连续发送失败，冷却 60 秒（%s）" % SEND_HEALTH["last_error"])
+            log("    这段时间不点微信窗口了，请检查微信是否掉登录 / 在托盘")
+
+
+class ClipboardGuard:
+    """发图前后保住用户剪贴板。
+
+    发图片必须走 剪贴板 → Ctrl+V，会把你复制的内容冲掉；
+    还原一下，顺便减少并发剪贴板抢用导致的崩溃。
+    """
+
+    def __init__(self):
+        self.text = None
+        self.has = False
+
+    def __enter__(self):
+        try:
+            import win32clipboard as cb
+
+            cb.OpenClipboard()
+            try:
+                if cb.IsClipboardFormatAvailable(cb.CF_UNICODETEXT):
+                    self.text = cb.GetClipboardData(cb.CF_UNICODETEXT)
+                    self.has = True
+            finally:
+                cb.CloseClipboard()
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, *exc):
+        if not self.has or not self.text:
+            return False
+        try:
+            import win32clipboard as cb
+
+            cb.OpenClipboard()
+            try:
+                cb.EmptyClipboard()
+                cb.SetClipboardData(cb.CF_UNICODETEXT, self.text)
+            finally:
+                cb.CloseClipboard()
+        except Exception:
+            pass
+        return False
+
+
+UIA_CACHE = {"u": None}
+
+
 def main():
     boot("进入 main()")
 
@@ -1702,9 +1789,17 @@ def main():
         """
         if game_running():
             return False
+
+        # 连续失败冷却中就别试了，免得一直戳微信窗口
+        allowed, why = send_allowed()
+        if not allowed:
+            log("[!] 跳过发送：%s" % why)
+            return False
+
         SEND_STATE["active"] = True
         SEND_STATE["start"] = time.time()
         snap = snapshot_win_state() if BACKGROUND_SEND else None
+        ok = False
         try:
             if BACKGROUND_SEND:
                 try:
@@ -1713,9 +1808,16 @@ def main():
                 except Exception as e:                 # noqa: BLE001
                     log("后台发送异常，改走前台重试：", repr(e))
                 log("后台发送没成功，把微信拉到前台再试一次")
-                return force_send_foreground(fn)
-            return force_send_foreground(fn)
+                ok = bool(force_send_foreground(fn))
+                return ok
+            ok = bool(force_send_foreground(fn))
+            return ok
         finally:
+            # 统一记账：成功清连败计数，失败累计 —— 连败三次就冷却（note_send_result 里）
+            try:
+                note_send_result(ok)
+            except Exception:
+                pass
             if BACKGROUND_SEND:
                 restore_win_state(snap)
             SEND_STATE["active"] = False
@@ -1745,7 +1847,8 @@ def main():
         except Exception:
             return False
 
-    UIA_CACHE = {"u": None}
+    # UIA_CACHE 定义在模块级（note_send_result 要用它重建缓存）。
+    # 这里不能再写一份 —— 局部变量会遮住全局，重建就静默失效了。
 
     def _input_value(u):
         """尽量读出输入框当前文字；读不到返回空串。"""
@@ -3662,17 +3765,34 @@ def main():
                 # → Ctrl+V）和 UIA。这几步全是原生调用，两个线程同时进来会
                 # 直接 access violation 把整个进程干掉 —— 实测崩过。
                 with gui_lock:
-                    try:
-                        return gui.send_image(p, chat_display_name, verify=is_gif)
-                    except TypeError:
-                        # 老版本没有 verify 参数
-                        return gui.send_image(p, chat_display_name)
-                    except Exception as e:               # noqa: BLE001
-                        log("send_image 异常，回退 send_file：", repr(e))
-                        return gui.send_file(p, chat_display_name)
+                    # 发图会占用剪贴板（SetClipboardData → Ctrl+V），
+                    # 发完把你原来复制的内容还原，不然发几张图就把剪贴板冲光了。
+                    with ClipboardGuard():
+                        try:
+                            return gui.send_image(p, chat_display_name, verify=is_gif)
+                        except TypeError:
+                            # 老版本没有 verify 参数
+                            return gui.send_image(p, chat_display_name)
+                        except Exception as e:               # noqa: BLE001
+                            log("send_image 异常，回退 send_file：", repr(e))
+                            return gui.send_file(p, chat_display_name)
 
             r = _do_send(path)
             ok = bool(r and r.get("status") == "成功")
+
+            # 日志统计：表情包失败占了全部失败（141 成功 / 11 失败，11 次全是表情包），
+            # 而且多数是「无返回」—— 典型的剪贴板/输入框还没准备好。
+            # 隔一会儿重试一次往往就好了，比直接放弃强。
+            if not ok:
+                time.sleep(0.8)
+                try:
+                    r2 = _do_send(path)
+                    if r2 and r2.get("status") == "成功":
+                        log("[表情包] 第一次没成功，重试后发出去了")
+                        r = r2
+                        ok = True
+                except Exception as e:                   # noqa: BLE001
+                    log("[表情包] 重试异常：", repr(e))
 
             # GIF 没被当成图片 → 压小再试一次
             if not ok and is_gif:
