@@ -3863,7 +3863,10 @@ def main():
                     # 发完把你原来复制的内容还原，不然发几张图就把剪贴板冲光了。
                     with ClipboardGuard():
                         try:
-                            return gui.send_image(p, chat_display_name, verify=is_gif)
+                            # 不做数据库校验：wechatauto 的 _verify_attachment_sent
+                            # 在 DB 线程停摆时会无限等待，实测把整个桥接卡死
+                            # （20:37 之后一条日志都没有）。误判好过卡死。
+                            return gui.send_image(p, chat_display_name, verify=False)
                         except TypeError:
                             # 老版本没有 verify 参数
                             return gui.send_image(p, chat_display_name)
@@ -4029,6 +4032,23 @@ def main():
                 else:
                     collect(data, ".png" if data[:4] == b"\x89PNG" else ".jpg", text)
                 return text or _sticker_label(content)
+
+            # 已经收过这张（同一个 md5）就不要再走一遍截图/连拍/识别 ——
+            # 用户反馈「重复收入卡进程」就是这条路：每来一次重拍 8 帧，
+            # 全程占着 gui_lock，发送那边就卡住了。
+            try:
+                _skip_by_md5 = False
+                _sdir = os.path.join(ROOT, "data", "stickers")
+                if md5 and os.path.isdir(_sdir):
+                    for _fn in os.listdir(_sdir):
+                        if _fn.startswith("stk_" + md5):
+                            _skip_by_md5 = True
+                            break
+                if _skip_by_md5:
+                    log("表情包：这张已经收过（md5=%s），跳过重复收录" % md5[:12])
+                    return _sticker_label(content)
+            except Exception:
+                pass
 
             path = _find_sticker_file(md5)
             if not path:
@@ -4423,10 +4443,13 @@ def main():
             try:
                 # 已经发过指定图就不再随机补，免得刷屏
                 _already = bool(data.get("images"))
-                _want_sticker = data.get("sticker") or (
+                # 核心说「用户明确要图」就照办，不看概率
+                _forced_by_core = bool(data.get("sticker"))
+                _want_sticker = _forced_by_core or (
                     not _already and STICKER_CHANCE > 0 and random.random() < STICKER_CHANCE
                 )
-                log("[表情包] 检查：chance=%.2f want=%s" % (STICKER_CHANCE, _want_sticker))
+                log("[表情包] 检查：chance=%.2f want=%s%s" % (
+                    STICKER_CHANCE, _want_sticker, "（用户明确要，跳过概率）" if _forced_by_core else ""))
                 if _want_sticker:
                     time.sleep(0.8)
                     # 把刚才的回复内容传进去，按语气挑图（而不是纯随机）
