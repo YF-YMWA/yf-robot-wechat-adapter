@@ -3874,6 +3874,15 @@ def main():
             r = _do_send(path)
             ok = bool(r and r.get("status") == "成功")
 
+            # 失败时把底层返回原样记下来。
+            # 「无返回」这种说法以前太含糊 —— 到底是 gif 被当文件、
+            # 还是粘贴没进去、还是校验超时，看完这行就知道。
+            if not ok:
+                try:
+                    log("[表情包] 发送返回：%r（%s）" % (r, "GIF" if is_gif else "静态"))
+                except Exception:
+                    pass
+
             # 日志统计：表情包失败占了全部失败（141 成功 / 11 失败，11 次全是表情包），
             # 而且多数是「无返回」—— 典型的剪贴板/输入框还没准备好。
             # 隔一会儿重试一次往往就好了，比直接放弃强。
@@ -3888,12 +3897,25 @@ def main():
                 except Exception as e:                   # noqa: BLE001
                     log("[表情包] 重试异常：", repr(e))
 
-            # GIF 没被当成图片 → 压小再试一次
+            # GIF 没被当成图片：先按文件发（快、稳、动画还在），
+            # 别一上来就压缩重试 —— 那一步要重走一遍粘贴+草稿检测，
+            # 每次约 20 秒，实测一次发送能拖到 90 秒。
             if not ok and is_gif:
-                log("GIF 没按图片发出（%s），压缩后重试" % (
+                log("GIF 没按图片发出（%s），先改按文件发" % (
                     (r or {}).get("message") or "无返回"))
+                try:
+                    r_file = gui.send_file(path, chat_display_name)
+                    if r_file and r_file.get("status") == "成功":
+                        ok = True
+                        log("[表情包] 动图已按文件发出（微信里点开是动的）")
+                except Exception as e:               # noqa: BLE001
+                    log("按文件发失败：", repr(e))
+
+            # 还不行 → 压小再试图片路线（有些 GIF 只是太大）
+            if not ok and is_gif:
                 small = shrink_gif(path)
                 if small and small != path:
+                    log("压小后再试一次图片路线")
                     try:
                         r = _do_send(small)
                         ok = bool(r and r.get("status") == "成功")
@@ -3904,14 +3926,14 @@ def main():
                             except OSError:
                                 pass
 
-            # 还是不行 → 发静帧（至少是张图，不是乱飞的文件卡片）
+            # 最后才是静帧（会让用户觉得「不是动图」，所以放最后）
             if not ok and is_gif:
                 try:
                     from PIL import Image
 
                     still = os.path.join(os.path.dirname(path), "_still_" + os.path.splitext(os.path.basename(path))[0] + ".png")
                     Image.open(path).convert("RGB").save(still, "PNG")
-                    log("动图发不出去，改发静帧")
+                    log("动图彻底发不出去，退静帧（这是最后手段）")
                     r = _do_send(still)
                     ok = bool(r and r.get("status") == "成功")
                     try:
