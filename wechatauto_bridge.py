@@ -46,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 
 # 独立副本：ROOT 指向本脚本所在目录（bridge/），
-# 这样 config.json、data/ 都在自己目录下，不依赖 whale-girl。
+# 这样 config.json、data/ 都在自己目录下，不依赖启动时的工作目录。
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(ROOT, "config.json")
 LOG_FILE = os.path.join(ROOT, "data", "wechat-bridge-4x.log")
@@ -883,7 +883,7 @@ def build_bot_url(cfg):
     """核心地址。优先级：配置 > 环境变量 > 默认。
 
     以前只看环境变量 WHALE_BOT_URL，没设就退回 `http://127.0.0.1:<本机 server.port>/webhook/wechat`
-    —— 那是原版 whale-girl 的路径，YF-Robot 根本没有 `/webhook/wechat`，
+    —— 那是旧版本的路径，YF-Robot 根本没有 `/webhook/wechat`，
     结果一启动就是满屏 404，看起来像「核心没反应」。
 
     现在：
@@ -1184,7 +1184,7 @@ def main():
     if any(ord(ch) > 127 for ch in ROOT):
         log("[!] 路径里有中文/非英文字符：", ROOT)
         log("    微信 UI 自动化在这种路径下会失败（发送一直报「拒绝访问」）。")
-        log("    请把整个文件夹移到纯英文路径再启动，例如 D:\\whale-girl-3.0")
+        log("    请把整个文件夹移到纯英文路径再启动，例如 D:\\YF-Robot")
     # 单实例锁：多个桥接连同一份微信数据库会导致同一条消息被回好几遍
     _lock_sock = None
     try:
