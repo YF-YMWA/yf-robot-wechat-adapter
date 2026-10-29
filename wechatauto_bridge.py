@@ -5147,6 +5147,45 @@ def main():
         except Exception as e:                      # noqa: BLE001
             log("启动自检跳过（服务未就绪）：%r" % (e,))
 
+    def wait_for_core(timeout=90):
+        """等核心就绪（最多 timeout 秒）。
+
+        核心没起的时候，适配器能做的一切都是徒劳 —— 收得到消息、回不出话。
+        与其让用户对着一堆 ConnectionError 猜，不如明确告诉他要先启动核心。
+        """
+        import time as _t
+
+        # 用真实存在的接口探活（/api/adapter/config 是给适配器读策略用的）
+        url = bot_base().rstrip("/") + "/api/adapter/config"
+        t0 = _t.time()
+        last_note = 0.0
+        while _t.time() - t0 < timeout:
+            try:
+                import requests as _rq
+
+                r = _rq.get(url, timeout=3)
+                if r.status_code < 500:
+                    if _t.time() - t0 > 2:
+                        log("核心已就绪（等了 %.1f 秒）" % (_t.time() - t0))
+                    return True
+            except Exception:
+                pass
+            if _t.time() - last_note > 10:
+                last_note = _t.time()
+                log("等核心启动中…（已等 %d 秒）YF-Robot 没在跑？先双击 YF-Robot.bat"
+                    % int(_t.time() - t0))
+            _t.sleep(2)
+        return False
+
+    # 启动前 90 秒内等核心；等不到就明确报错退出，别让它带着一个死端口继续跑
+    if not wait_for_core(90):
+        log("=" * 46)
+        log("核心（YF-Robot）没启动，适配器无法工作。")
+        log("请先双击 YF-Robot 文件夹里的 YF-Robot.bat，再启动本程序。")
+        log("（如果你用了开机自启，检查一下自启项有没有生效）")
+        log("=" * 46)
+        return 3
+
     threading.Thread(target=self_check, daemon=True).start()
 
     try:
