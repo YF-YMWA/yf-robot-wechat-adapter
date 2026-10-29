@@ -66,6 +66,60 @@ ACCOUNT_NAME = ""
 _RECENT_MSGS = {"n": 0, "since": 0.0}
 
 
+def count_today_crashes():
+    """数今天 bridge-crash.log 里出现了几次崩溃转储。
+
+    watchdog 转储的格式里带日期（fault handler 头），所以按今天的日期串数出现次数。
+    """
+    try:
+        import time as _t
+
+        p = os.path.join(ROOT, "data", "bridge-crash.log")
+        if not os.path.exists(p):
+            return 0
+        # 只看最近 200KB，避免日志很大时每次都全读
+        size = os.path.getsize(p)
+        with open(p, "rb") as f:
+            if size > 200 * 1024:
+                f.seek(size - 200 * 1024)
+            text = f.read().decode("utf-8", "ignore")
+        today = _t.strftime("%Y-%m-%d")
+        return text.count("Fatal Python error") + text.count(today + " ")
+    except Exception:
+        return 0
+
+
+def record_last_op(name):
+    """记下「正在做哪个高风险操作」。
+
+    为什么要这个：python 的 0xC0000005（访问冲突）发生在 CPython/COM 内部，
+    Python 层抓不住，进程直接消失 —— 事后完全不知道死在哪个 UIA 调用上。
+    这里在调用前把操作名和时间戳写进 data/last-op.txt，
+    下次启动时读出来，就能定位到具体是哪一步崩的（成本几乎为零）。
+    """
+    try:
+        import time as _t
+
+        d = os.path.join(ROOT, "data")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "last-op.txt"), "w", encoding="utf-8") as f:
+            f.write("%s\t%s\n" % (_t.strftime("%Y-%m-%d %H:%M:%S"), name))
+    except Exception:
+        pass
+
+
+def read_prev_op():
+    """读上一次崩溃前正在做什么（没有就是空串）。"""
+    try:
+        p = os.path.join(ROOT, "data", "last-op.txt")
+        if not os.path.exists(p):
+            return ""
+        with open(p, encoding="utf-8") as f:
+            return (f.read() or "").strip()
+    except Exception:
+        return ""
+
+
 def core_pick_sticker(text="", only_gif=False):
     """问核心挑一张表情包（按语气）。返回文件名，失败返回空串。
 
@@ -1966,6 +2020,7 @@ def main():
         try:
             import win32api
             import win32con
+            record_last_op("枚举微信窗口")
             hwnd = find_weixin_hwnd()
             if hwnd:
                 force_foreground(hwnd)
@@ -3878,7 +3933,8 @@ def main():
 
                 # 传进来的是文件名而不是绝对路径 → 在素材库里找
                 if not os.path.isfile(path):
-                    path = resolve_media_path(path) or path
+                    record_last_op("解析图片路径")
+                path = resolve_media_path(path) or path
 
                 if not os.path.isfile(path):
                     log("要发的图不存在：%s" % specific_path)
@@ -3955,6 +4011,7 @@ def main():
             # 发图这条路卡死时看门狗看不见，进程就永久挂住。
             SEND_STATE["active"] = True
             SEND_STATE["start"] = time.time()
+            record_last_op("发图（剪贴板粘贴）")
             try:
                 r = _do_send(path)
             finally:
@@ -5026,6 +5083,8 @@ def main():
                     "account": ACCOUNT_NAME,
                     "recentMessages": recent_msg_count(),
                     # 发送健康度：连续失败冷却时，面板能直接看出「不是没收到，是发不出去」
+                    # 今日崩溃次数：让面板能直接看出「适配器不稳定」
+                    "crashes": count_today_crashes(),
                     "send": {
                         "ok": SEND_HEALTH.get("ok", 0),
                         "fail": SEND_HEALTH.get("fail", 0),
@@ -5176,6 +5235,15 @@ def main():
                     % int(_t.time() - t0))
             _t.sleep(2)
         return False
+
+    # 上次崩在哪个操作上？（面包屑）—— 崩溃是 0xC0000005 时只有这个能定位
+    _prev = read_prev_op()
+    _crashes_today = count_today_crashes()
+    if _crashes_today:
+        log("[诊断] 今天已崩溃 %d 次；上次崩溃前正在做：%s" % (
+            _crashes_today, _prev or "（没有记录）"))
+    elif _prev:
+        log("[诊断] 上次运行最后在做：%s（这次正常退出）" % _prev)
 
     # 启动前 90 秒内等核心；等不到就明确报错退出，别让它带着一个死端口继续跑
     if not wait_for_core(90):
