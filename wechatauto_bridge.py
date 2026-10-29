@@ -66,6 +66,47 @@ ACCOUNT_NAME = ""
 _RECENT_MSGS = {"n": 0, "since": 0.0}
 
 
+def image_crash_count():
+    """今天因为「发图」崩了几次。"""
+    try:
+        import json as _json
+
+        p = os.path.join(ROOT, "data", "image-crash.json")
+        if not os.path.exists(p):
+            return 0
+        with open(p, encoding="utf-8") as f:
+            j = _json.load(f)
+        today = time.strftime("%Y-%m-%d")
+        return int(j.get(today) or 0)
+    except Exception:
+        return 0
+
+
+def bump_image_crash(prev_op):
+    """上次是发图崩的就 +1，并写回当天计数。"""
+    try:
+        import json as _json
+
+        if "发图" not in str(prev_op or ""):
+            return 0
+
+        p = os.path.join(ROOT, "data", "image-crash.json")
+        j = {}
+        if os.path.exists(p):
+            try:
+                with open(p, encoding="utf-8") as f:
+                    j = _json.load(f) or {}
+            except Exception:
+                j = {}
+        today = time.strftime("%Y-%m-%d")
+        j = {today: int(j.get(today) or 0) + 1}      # 只留今天，不无限增长
+        with open(p, "w", encoding="utf-8") as f:
+            _json.dump(j, f)
+        return j[today]
+    except Exception:
+        return 0
+
+
 def count_today_crashes():
     """数今天 bridge-crash.log 里出现了几次崩溃转储。
 
@@ -422,6 +463,11 @@ REFUSE_ON_MULTI_ACCOUNT = bool(
     # 默认开：发错号比不发严重得多
     True
 )
+# 发图方式：auto / paste / file
+#   paste = 剪贴板粘贴（微信里是内联图片，但实测会 0xC0000005 崩进程）
+#   file  = 当文件发（稳，对方点开能看）
+#   auto  = 今天因发图崩过 ≥2 次就自动切 file
+IMAGE_SEND_MODE = "auto"
 KEYBOARD_FALLBACK = True
 BACKGROUND_SEND = True
 LOW_BATTERY_PCT = 5.0
@@ -475,6 +521,7 @@ try:
     QUOTE_REPLY = bool(_wechat.get("quoteReply", True))
     # UIA 彻底发不出去时，退到「Ctrl+F 搜索会话 → 粘贴 → 回车」的键盘通道（会抢前台）
     KEYBOARD_FALLBACK = bool(_wechat.get("keyboardFallback", True))
+    IMAGE_SEND_MODE = str(_wechat.get("imageSendMode") or "auto").lower()
     REFUSE_ON_MULTI_ACCOUNT = bool(_wechat.get("refuseOnMultiAccount", True))
     # 后台发送：不抢前台直接发（实测最小化/被遮挡也能发）。false = 每次先把微信拉到前台
     BACKGROUND_SEND = bool(_wechat.get("backgroundSend", True))
@@ -515,7 +562,7 @@ def reload_config(path=None):
 
     返回是否真的重新加载了。
     """
-    global REFUSE_ON_MULTI_ACCOUNT, GAME_TOKENS, AWAY_NOTICE, RETURN_NOTICE, QUEUED_MAX_AGE, QUEUED_MAX_CHATS
+    global IMAGE_SEND_MODE, REFUSE_ON_MULTI_ACCOUNT, GAME_TOKENS, AWAY_NOTICE, RETURN_NOTICE, QUEUED_MAX_AGE, QUEUED_MAX_CHATS
     global QUOTE_REPLY, KEYBOARD_FALLBACK, BACKGROUND_SEND, LOW_BATTERY_PCT, GOODNIGHT_TEXT
     global SHARE_ENABLED, SHARE_EVERY, CARE_ENABLED, CARE_QUIET_MIN, DIGEST_MINUTES
     global STALE_AFTER, SYSTEM_SENDER_NAMES, BASE_SYSTEM_SENDERS, MASTER_WXID
@@ -4009,13 +4056,43 @@ def main():
 
             # 发图也纳入看门狗监控：以前只有 with_window_on_top 会置位，
             # 发图这条路卡死时看门狗看不见，进程就永久挂住。
-            SEND_STATE["active"] = True
-            SEND_STATE["start"] = time.time()
-            record_last_op("发图（剪贴板粘贴）")
-            try:
-                r = _do_send(path)
-            finally:
-                SEND_STATE["active"] = False
+            def _use_file_mode():
+                """这次该不该绕过粘贴、直接按文件发。"""
+                mode = str(IMAGE_SEND_MODE or "auto").lower()
+                if mode == "file":
+                    return True, "配置指定按文件发"
+                if mode == "paste":
+                    return False, "配置指定用粘贴"
+                # auto：看今天的崩溃记录
+                try:
+                    n = image_crash_count()
+                except Exception:
+                    return False, ""
+                if n >= 2:
+                    return True, "今天发图崩过 %d 次，自动改为按文件发" % n
+                return False, ""
+
+            _file_mode, _why = _use_file_mode()
+            if _file_mode:
+                log("[表情包] %s：%s" % (_why, "按文件发送（微信里点开可见）"))
+                SEND_STATE["active"] = True
+                SEND_STATE["start"] = time.time()
+                record_last_op("发图（按文件）")
+                try:
+                    r = gui.send_file(path, chat_display_name)
+                except Exception as e:               # noqa: BLE001
+                    log("按文件发也失败：", repr(e))
+                    r = None
+                finally:
+                    SEND_STATE["active"] = False
+            else:
+                SEND_STATE["active"] = True
+                SEND_STATE["start"] = time.time()
+                record_last_op("发图（剪贴板粘贴）")
+                try:
+                    r = _do_send(path)
+                finally:
+                    SEND_STATE["active"] = False
             ok = bool(r and r.get("status") == "成功")
 
             # 失败时把底层返回原样记下来。
@@ -5240,8 +5317,12 @@ def main():
     _prev = read_prev_op()
     _crashes_today = count_today_crashes()
     if _crashes_today:
-        log("[诊断] 今天已崩溃 %d 次；上次崩溃前正在做：%s" % (
-            _crashes_today, _prev or "（没有记录）"))
+        _img_crashes = bump_image_crash(_prev)
+        log("[诊断] 今天已崩溃 %d 次；上次崩溃前正在做：%s%s" % (
+            _crashes_today,
+            _prev or "（没有记录）",
+            ("（发图崩溃 %d 次，本次起按文件发）" % _img_crashes) if _img_crashes else "",
+        ))
     elif _prev:
         log("[诊断] 上次运行最后在做：%s（这次正常退出）" % _prev)
 
