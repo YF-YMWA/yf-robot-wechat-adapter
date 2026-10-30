@@ -5180,6 +5180,51 @@ def main():
                 pass  # 服务没起来/重启中，下一轮再报
             time.sleep(20)
 
+    def outbox_watch():
+        """轮询核心的后台作业结果（画图这类长任务做完会放在这里）。
+
+        每 5 秒问一次「有没有要发的东西」。取走即清，不会重复发。
+        """
+        while True:
+            time.sleep(5)
+            try:
+                if AWAY["on"] or away_active():
+                    continue
+                base = bot_base()
+                tok = _adapter_token()
+                r = requests.get(
+                    base + "/api/outbox",
+                    params={"chat": ""},
+                    headers={"x-adapter-token": tok} if tok else {},
+                    timeout=10,
+                )
+                if not r.ok:
+                    continue
+                data = r.json() or {}
+                items = data.get("list") or []
+                for it in items:
+                    chat = str(it.get("chatId") or "")
+                    text = str(it.get("text") or "").strip()
+                    imgs = it.get("images") or []
+                    if not chat:
+                        continue
+                    # chatId 可能带 private: / grp: 前缀
+                    target = chat.split(":", 1)[1] if ":" in chat else chat
+                    if text:
+                        log("[后台] 补发一条 → %s：%s" % (target, text[:30]))
+                        send_text(text, target)
+                        time.sleep(0.6)
+                    for name in imgs[:3]:
+                        _p = resolve_media_path(name)
+                        if not _p:
+                            log("[后台] 图找不到：%s" % name)
+                            continue
+                        log("[后台] 补发图片 → %s：%s" % (target, name))
+                        send_sticker(target, specific_path=_p)
+                        time.sleep(0.8)
+            except Exception as e:                  # noqa: BLE001
+                log("后台结果轮询失败（不影响聊天）：", repr(e))
+
     def config_watch():
         """盯 config.json 的修改时间：调试台一保存就热更新，不用重启桥接。
 
@@ -5206,6 +5251,7 @@ def main():
 
     threading.Thread(target=flush_pending, daemon=True).start()
     threading.Thread(target=config_watch, daemon=True).start()
+    threading.Thread(target=outbox_watch, daemon=True).start()
     threading.Thread(target=game_watch, daemon=True).start()
     threading.Thread(target=digest_watch, daemon=True).start()
     threading.Thread(target=warmup, daemon=True).start()
