@@ -275,7 +275,7 @@ def pull_policy():
     所以以核心为准：心跳循环里每 20 秒拉一次，改完 20 秒内生效。
     核心不可达就继续用本地值（本地兜底路径要用到）。
     """
-    global STICKER_CHANCE, MEDIA_COLLECT, COLLECT_WHITELIST
+    global QUOTE_REPLY, STICKER_CHANCE, MEDIA_COLLECT, COLLECT_WHITELIST
     try:
         # requests 只在 main() 里 import，模块级函数要用得自己进来
         import requests as _requests
@@ -299,6 +299,10 @@ def pull_policy():
         if isinstance(j.get("collectOnlyFrom"), list):
             COLLECT_WHITELIST = [str(x).strip() for x in j["collectOnlyFrom"] if str(x).strip()]
         global VOICE_CHANCE
+        # 引用回复：面板上开了就开（以前这里没有，只能手改 config.json）
+        if isinstance(j.get("quoteReply"), bool):
+            QUOTE_REPLY = bool(j["quoteReply"])
+
         if isinstance(j.get("voiceChance"), (int, float)):
             VOICE_CHANCE = max(0.0, min(1.0, float(j["voiceChance"])))
     except Exception:                              # noqa: BLE001
