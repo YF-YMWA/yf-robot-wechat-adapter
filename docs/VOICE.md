@@ -161,3 +161,37 @@ C:\Users\<你>\Documents\WeChat Files
 | 腾讯电脑管家 | 设置 → 白名单 → 添加目录 |
 
 加完重启适配器（关窗口 → 双击 `启动桥接.bat`），再跑 `语音自检.bat` 看警告是否消失。
+
+---
+
+## 关于杀毒软件（这台机器的实际情况）
+
+排查时发现这台机器装过 **Reason Cybersecurity**，卸载后留下：
+
+- 安全中心里一条指向 `C:\Program Files\ReasonLabs\EPP\rsRemediation.exe` 的记录（**文件已不存在**）
+- **Windows Defender 被关掉且没恢复**：`病毒防护=False / 实时保护=False`，WinDefend 服务 Stopped
+
+也就是说：**当前没有任何杀毒软件在运行**。所以「控件树拿不到」**不是杀软拦的**，
+而是**适配器用了管理员运行**（微信不是管理员 → 完整性级别不一致 → 读不到 Weixin.dll）。
+
+### 怎么恢复防护
+
+1. 双击 `恢复防护并加白名单.bat`（UAC 点是）——尝试开启实时保护并加排除项
+2. 双击 `修复防护服务.bat` ——把 WinDefend 改回自动并启动
+3. **重启一次电脑**（服务改动要重启才彻底生效）
+
+重启后看：`Get-MpComputerStatus | Select AntivirusEnabled, RealTimeProtectionEnabled`
+
+如果还是 False，说明 Defender 被卸坏了，按顺序试：
+
+```
+设置 → 隐私和安全性 → Windows 安全中心 → 设备性能和运行状况 → 疑难解答
+DISM /Online /Cleanup-Image /RestoreHealth
+sfc /scannow
+```
+
+实在修不好，建议装一个第三方杀软（火绒/卡巴），否则等于裸奔。
+
+### 真正解决「控件树拿不到」的办法
+
+**别用管理员运行适配器。** 普通双击 `启动桥接.bat`，微信是什么权限，适配器就是什么权限。
