@@ -4657,6 +4657,7 @@ def main():
                 if _voice_text:
                     _ctx = _voice_text
                     log("[语音] 合成中…（%d 字）" % len(_ctx))
+                    _vp = None   # 每条消息重新算，别沿用上一条的值
                     if VOICE_MODE == "ptt":
                         # 发真语音条：按住 Alt 说话，把合成的声音送进麦克风
                         try:
@@ -4678,7 +4679,8 @@ def main():
                         except Exception as _ve:          # noqa: BLE001
                             log("[语音] 发语音条异常：%r → 回退当文件发" % (_ve,))
 
-                    _vp = core_tts(_ctx) if not locals().get("_vp") else _vp
+                    if not _vp:
+                        _vp = core_tts(_ctx)
                     if _vp:
                         time.sleep(0.8)
                         # gui 可能还没建（纯文本回复不会建），这里自己兜一下。
@@ -5220,8 +5222,13 @@ def main():
 
         每 5 秒问一次「有没有要发的东西」。取走即清，不会重复发。
         """
+        # 核心没起来时退避，避免满屏「连接被拒绝」
+        OUTBOX_BACKOFF = 5
+        OUTBOX_MAX = 60
+        last_err = ""
+
         while True:
-            time.sleep(5)
+            time.sleep(OUTBOX_BACKOFF)
             try:
                 if AWAY["on"] or away_active():
                     continue
@@ -5236,6 +5243,10 @@ def main():
                 if not r.ok:
                     continue
                 data = r.json() or {}
+                if OUTBOX_BACKOFF != 5:
+                    log("[后台] 核心已恢复，轮询回到 5 秒")
+                    OUTBOX_BACKOFF = 5
+                last_err = ""
                 items = data.get("list") or []
                 for it in items:
                     chat = str(it.get("chatId") or "")
@@ -5258,7 +5269,16 @@ def main():
                         send_sticker(target, specific_path=_p)
                         time.sleep(0.8)
             except Exception as e:                  # noqa: BLE001
-                log("后台结果轮询失败（不影响聊天）：", repr(e))
+                # 连不上核心是常态（服务没开），退避 + 只提示一次，别刷屏
+                msg = str(e)
+                kind = "连接被拒绝（核心没启动？）" if "10061" in msg or "Connection refused" in msg \
+                    and "10061" in msg else "轮询出错"
+                if "10061" in msg or "refused" in msg.lower():
+                    kind = "连接被拒绝（核心没启动？）"
+                if kind != last_err:
+                    log("[后台] 取不到待发结果：%s —— 会退避重试，不影响聊天" % kind)
+                    last_err = kind
+                OUTBOX_BACKOFF = min(OUTBOX_MAX, OUTBOX_BACKOFF * 2)
 
     def config_watch():
         """盯 config.json 的修改时间：调试台一保存就热更新，不用重启桥接。
