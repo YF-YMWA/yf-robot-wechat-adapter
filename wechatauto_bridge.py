@@ -4736,12 +4736,9 @@ def main():
                 # 以前是适配器自己掷骰子、把整段原文拿去念，
                 # 结果把「（尾巴拍了拍）」和 emoji 一起念出来了。
                 # 现在核心清洗好、判断好，适配器只执行；没有 voice 字段就退回旧的随机逻辑。
-                _voice_spec = data.get("voice") if isinstance(data, dict) else None
-                _voice_text = ""
-                if isinstance(_voice_spec, dict):
-                    _voice_text = str(_voice_spec.get("text") or "").strip()
-                elif isinstance(_voice_spec, str):
-                    _voice_text = _voice_spec.strip()
+                # 注意：这里不能再把 _voice_text 置空重算。
+                # 前面已经算好（含「陌生人不给语音」），以前这里重置一次，
+                # 导致「[媒体] 这条只发语音」之后语音块被跳过 —— 文字跳过、语音没发，最后什么都没发。
 
                 if _voice_text:
                     _ctx = _voice_text
