@@ -4396,6 +4396,16 @@ def main():
             # 心跳里要报「最近一分钟处理了多少条」，核心看不到适配器日志
             note_msg()
 
+            # 自己发的消息不该走 ASR/图像描述，也不该触发回复。
+            # 以前这个判断放在后面，导致语音先被识别了一遍（刷 ASR 额度、还可能自问自答）。
+            try:
+                _sender = msg.get("sender_username") or ""
+                _me = me
+                if _sender and _me and _sender == _me:
+                    return
+            except Exception:
+                pass
+
             mtype = msg.get("type") or ""
             content = (msg.get("content") or "").strip()
 
