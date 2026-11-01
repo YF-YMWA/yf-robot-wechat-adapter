@@ -39,6 +39,11 @@ def open_chat_and_focus(who, log=print):
     try:
         if not gui.is_alive():
             return False, "微信窗口不在了"
+
+        # 管理员运行/命令行窗口在前时，微信会被挤到后面，Alt 就按到控制台里去了。
+        # 发送期间先把自己的控制台收起来，发完再还回来。
+        V.minimize_our_console()
+
         gui.bring_to_front()
         time.sleep(0.3)
         if who:
@@ -109,8 +114,26 @@ def send_voice(text, *, chat=None, tts_fn, ffmpeg="ffmpeg", out_device=None,
     hwnd, title = V.find_wechat_window()
     if not hwnd:
         return {"ok": False, "error": "找不到微信窗口", "steps": steps}
-    if not V.foreground_is(hwnd):
-        return {"ok": False, "error": "微信不在前台，拒绝盲按键", "steps": steps}
+
+    # 再抢一次前台（管理员运行时系统会拒绝普通请求，这里用 AttachThreadInput 重试）
+    ok_fg = False
+    for attempt in range(3):
+        if V.foreground_is(hwnd):
+            ok_fg = True
+            break
+        V.focus_window(hwnd, tries=1)
+        time.sleep(0.25)
+    if not ok_fg:
+        V.restore_our_console()
+        tip = ""
+        if V.is_admin():
+            tip = "（你现在是用管理员运行的，微信不是管理员，权限不一致时切前台会被拒绝 —— 请改成普通双击运行）"
+        return {
+            "ok": False,
+            "error": "微信不在前台，拒绝盲按键" + tip,
+            "steps": steps,
+        }
+    steps.append("已确认微信在前台")
 
     hold_s = max(MIN_HOLD_S, dur + tail_ms / 1000.0)
     try:
@@ -127,6 +150,9 @@ def send_voice(text, *, chat=None, tts_fn, ffmpeg="ffmpeg", out_device=None,
         return {"ok": False, "error": "按住说话失败：%s" % e, "steps": steps}
     finally:
         V.key_up_safe()
+        V.restore_our_console()
+
+    V.restore_our_console()
 
     # 4. 验证：最后一条是不是语音
     time.sleep(1.0)
@@ -139,6 +165,22 @@ def send_voice(text, *, chat=None, tts_fn, ffmpeg="ffmpeg", out_device=None,
             steps.append("最后一条消息类型：%s" % kind)
     except Exception as e:
         steps.append("验证失败（不影响已发）：%r" % (e,))
+
+    # 验证读不到消息时（常见原因：UIA 树被安全软件拦），
+    # 不能说「不是语音条」—— 只说「发了，但没法确认类型」。
+    if verified is None:
+        steps.append(
+            "读不到消息，无法确认类型（UIA 控件树拿不到时就会这样："
+            "把 python 加进安全软件白名单、别用管理员运行，通常就好了）"
+        )
+        return {
+            "ok": True,
+            "steps": steps,
+            "seconds": round(hold_s, 1),
+            "verified": None,
+            "is_voice": None,
+            "note": "已按住 Alt 发送，但没能读取消息确认类型",
+        }
 
     return {
         "ok": True,

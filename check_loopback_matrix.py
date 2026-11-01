@@ -43,6 +43,6 @@ for oi, oname in outs:
         got = L.rms(L.record(ii, 1.2, rate=rate))
         t.join()
 
-        mark = "✅ 通" if got > max(60, base * 2.2) else "—"
+        mark = "[OK] 通" if got > max(60, base * 2.2) else "—"
         print("  out[%d] %-30s → in[%d] %-28s 本底%4.0f 录到%5.0f %s"
               % (oi, oname[:28], ii, iname[:26], base, got, mark))

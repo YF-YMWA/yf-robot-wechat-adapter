@@ -122,9 +122,9 @@ def main():
         print("  播放失败:", result["err"])
         return 1
     if got > max(60, base * 2.2):
-        print("  ✅ 能环回（这条线可以把声音送进麦克风）")
+        print("  [OK] 能环回（这条线可以把声音送进麦克风）")
         return 0
-    print("  ❌ 听不到 —— 这条线不通，或者需要开启「侦听此设备」")
+    print("  [X] 听不到 —— 这条线不通，或者需要开启「侦听此设备」")
     return 2
 
 
