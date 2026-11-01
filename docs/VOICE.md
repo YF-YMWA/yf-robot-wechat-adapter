@@ -123,3 +123,41 @@ runtime\python\python.exe voice_send.py "你好，这是一条测试语音" 文�
 
 麦克风线路没通。跑 `语音自检.bat` 的第二段（线路测试），
 看哪一组「播放 → 录音」显示 `[OK] 通`，然后把 `voiceOutDevice` 设成那个播放设备序号。
+
+---
+
+## 加杀毒软件白名单（解决「控件树拿不到」）
+
+适配器要读微信进程的模块、给窗口发按键。部分安全软件会拦这些操作，
+表现就是日志里「控件树拿不到」「落点窗口不属于微信」「打不开聊天」。
+
+### 一键版
+
+双击 `加入杀软白名单.bat` → UAC 点「是」。它会：
+
+1. 自动找微信安装目录（进程 / 注册表 / 常见位置三重探测）
+2. 把下面这些加进 Windows Defender 排除项
+3. 如果装了第三方安全软件，打印该去哪儿加（Defender 会被第三方接管，加了也不生效）
+
+结果写进 `av-whitelist.log`，可以直接看。
+
+### 要加白名单的路径（手动时照抄）
+
+```
+C:\Users\<你>\Documents\deepseek-harness\default-workspace\YF-Robot
+C:\Users\<你>\Documents\deepseek-harness\default-workspace\YF-Robot\runtime\python\python.exe
+C:\Users\<你>\Documents\deepseek-harness\default-workspace\yf-robot-wechat-adapter
+C:\Program Files\Tencent\Weixin
+C:\Users\<你>\Documents\WeChat Files
+```
+
+### 第三方安全软件在哪加
+
+| 软件 | 位置 |
+|---|---|
+| Reason Cybersecurity | 客户端 → 设置/Settings → 排除项 Exclusions → 添加文件夹 |
+| 360 安全卫士 | 木马查杀 → 信任区 → 添加目录 |
+| 火绒 | 防护中心 → 信任区 → 添加目录 |
+| 腾讯电脑管家 | 设置 → 白名单 → 添加目录 |
+
+加完重启适配器（关窗口 → 双击 `启动桥接.bat`），再跑 `语音自检.bat` 看警告是否消失。
