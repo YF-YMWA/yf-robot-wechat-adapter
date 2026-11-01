@@ -451,6 +451,23 @@ VOICE_CHANCE = float(os.environ.get("WHALE_VOICE_CHANCE", "0"))
 VOICE_MODE = "file"
 VOICE_OUT_DEVICE = -1
 
+# 启动时读一次语音模式（不能用 _cfg —— 它在下面第 530 多行才加载，
+# 用了会被 except 吞掉，导致永远停在默认的 file）
+try:
+    import io as _io2
+    import json as _json2
+    _cp2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    with _io2.open(_cp2, encoding="utf-8") as _f2:
+        _w2 = (_json2.load(_f2) or {}).get("wechat") or {}
+    _vm_cfg = _w2.get("voiceMode") or "file"
+    if _vm_cfg in ("file", "ptt"):
+        VOICE_MODE = _vm_cfg
+    _vod = _w2.get("voiceOutDevice")
+    if isinstance(_vod, int):
+        VOICE_OUT_DEVICE = _vod
+except Exception as _e2:
+    print("[语音] 读取 config.json 的 voiceMode 失败：%r" % (_e2,))
+
 # 是否收藏收到的图片（存到 data/images/，控制台可查看）
 MEDIA_COLLECT = os.environ.get("WHALE_MEDIA_COLLECT", "1") not in ("0", "false", "no")
 
@@ -5383,6 +5400,7 @@ def main():
             # 排查「改了没生效」这类问题时，光看进程在跑没用 ——
             # 得知道它加载的是不是最新代码。这里把几个关键模块点出来，
             # 重启后对着这行就能确认。
+            log("启动语音模式：%s（播放设备 %s）" % (VOICE_MODE, VOICE_OUT_DEVICE))
             log("启动自检：模块 消息路由=%s 表情解析=%s 媒体=%s" % (
                 route_message.__module__,
                 _extract_emoticon_md5.__module__,
