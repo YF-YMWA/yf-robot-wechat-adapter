@@ -4747,6 +4747,7 @@ def main():
                     _ctx = _voice_text
                     log("[语音] 合成中…（%d 字）" % len(_ctx))
                     _vp = None   # 每条消息重新算，别沿用上一条的值
+                    _voice_sent = False
                     if VOICE_MODE == "ptt":
                         # 发真语音条：按住 Alt 说话，把合成的声音送进麦克风
                         try:
@@ -4762,13 +4763,15 @@ def main():
                             if _res.get("ok"):
                                 log("[语音] 已按住 Alt %.1fs，验证=%s（None=没读到消息，不能确认是语音条）"
                                     % (_res.get("seconds") or 0, _res.get("verified")))
-                                _vp = ""   # 已经发过了，别再当文件发一遍
+                                # 这里必须用布尔量：以前写 _vp = ""，
+                                # 空字符串是假值，下面 if not _vp 又会重新合成并发成文件
+                                _voice_sent = True
                             else:
                                 log("[语音] 发语音条失败：%s → 回退当文件发" % _res.get("error"))
                         except Exception as _ve:          # noqa: BLE001
                             log("[语音] 发语音条异常：%r → 回退当文件发" % (_ve,))
 
-                    if not _vp:
+                    if not _voice_sent and not _vp:
                         _vp = core_tts(_ctx)
                     if _vp:
                         time.sleep(0.8)

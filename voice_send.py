@@ -78,7 +78,7 @@ def last_message(who=None):
 
 
 def send_voice(text, *, chat=None, tts_fn, ffmpeg="ffmpeg", out_device=None,
-               tail_ms=400, log=print):
+               tail_ms=700, log=print):
     """完整流程。返回 dict：{ok, steps, error?, seconds?, verified?}"""
     steps = []
     text = str(text or "").strip()
@@ -140,7 +140,7 @@ def send_voice(text, *, chat=None, tts_fn, ffmpeg="ffmpeg", out_device=None,
         V.alt_down()
         t0 = time.time()
         steps.append("Alt 按下")
-        time.sleep(0.25)
+        time.sleep(0.6)   # 微信打开录音面板要点时间，太短前几个字进不去
         V.play_wav(pcm, out_device if out_device is not None else -1)
         while time.time() - t0 < hold_s:
             time.sleep(0.02)
