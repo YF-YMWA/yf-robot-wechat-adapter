@@ -4698,7 +4698,7 @@ def main():
                                 log=log,
                             )
                             if _res.get("ok"):
-                                log("[语音] 已发语音条（按住 %.1fs，验证=%s）"
+                                log("[语音] 已按住 Alt %.1fs，验证=%s（None=没读到消息，不能确认是语音条）"
                                     % (_res.get("seconds") or 0, _res.get("verified")))
                                 _vp = ""   # 已经发过了，别再当文件发一遍
                             else:
