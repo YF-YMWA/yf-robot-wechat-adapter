@@ -189,7 +189,8 @@ def play_wav(path, device_index=WAVE_MAPPER, timeout_s=None):
 # ---------- 按键：按住 Alt ----------
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
-VK_MENU = 0x12
+VK_MENU = 0x12      # 左 Alt（微信 4.x 不用它）
+VK_RMENU = 0xA5     # 右 Alt —— 微信 4.x 的「按住发语音」就是这个
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
 
@@ -204,11 +205,12 @@ def _key(vk, up=False, extended=False):
 
 
 def alt_down():
-    _key(VK_MENU, up=False)
+    # 微信 4.x 认的是右 Alt（界面提示「发语音（按住右 Alt）」）
+    _key(VK_RMENU, up=False, extended=True)
 
 
 def alt_up():
-    _key(VK_MENU, up=True)
+    _key(VK_RMENU, up=True, extended=True)
 
 
 def key_up_safe():
