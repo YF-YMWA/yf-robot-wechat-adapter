@@ -193,14 +193,18 @@ VK_MENU = 0x12      # 左 Alt（微信 4.x 不用它）
 VK_RMENU = 0xA5     # 右 Alt —— 微信 4.x 的「按住发语音」就是这个
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
+KEYEVENTF_EXTENDEDKEY = 0x0001
 
 
 def _key(vk, up=False, extended=False):
     flags = 0
     if up:
         flags |= KEYEVENTF_KEYUP
+    # 注意：KEYEVENTF_SCANCODE 时第二个参数必须是扫描码，
+    # 之前把虚拟键(0xA5)塞进扫描码位，结果按键根本没生效 —— 右 Alt 完全没按下去。
+    # 扩展键要的是 KEYEVENTF_EXTENDEDKEY。
     if extended:
-        flags |= KEYEVENTF_SCANCODE
+        flags |= KEYEVENTF_EXTENDEDKEY
     user32.keybd_event(vk, 0, flags, 0)
 
 
