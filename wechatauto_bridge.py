@@ -451,6 +451,10 @@ VOICE_CHANCE = float(os.environ.get("WHALE_VOICE_CHANCE", "0"))
 VOICE_MODE = "file"
 VOICE_OUT_DEVICE = -1
 
+# 有语音时不发文字；语音与图片互斥（一条回复只发一种主媒体）
+VOICE_ONLY = False
+MEDIA_EXCLUSIVE = True
+
 # 启动时读一次语音模式（不能用 _cfg —— 它在下面第 530 多行才加载，
 # 用了会被 except 吞掉，导致永远停在默认的 file）
 try:
@@ -465,6 +469,9 @@ try:
     _vod = _w2.get("voiceOutDevice")
     if isinstance(_vod, int):
         VOICE_OUT_DEVICE = _vod
+    # 有语音就不发文字 / 语音和图片不同时发
+    VOICE_ONLY = bool(_w2.get("voiceOnly", False))
+    MEDIA_EXCLUSIVE = bool(_w2.get("mediaExclusive", True))
 except Exception as _e2:
     print("[语音] 读取 config.json 的 voiceMode 失败：%r" % (_e2,))
 
@@ -4625,6 +4632,38 @@ def main():
 
             log("回复", ("群" if is_group else "私聊"), target, "→", nickname, "：", (bubbles[0] or "")[:40])
 
+            # === 先决定这条要不要发语音，再决定文字/图片要不要发 ===
+            # 以前语音是在文字和图片都发完之后才判断，结果「语音+文字」一起出现。
+            _voice_text = ""
+            try:
+                _vs_spec = data.get("voice")
+                if isinstance(_vs_spec, dict):
+                    _voice_text = str(_vs_spec.get("text") or "").strip()
+                elif isinstance(_vs_spec, str):
+                    _voice_text = _vs_spec.strip()
+                if not _voice_text and VOICE_CHANCE > 0 and random.random() < VOICE_CHANCE:
+                    _voice_text = " ".join(str(b) for b in (data.get("bubbles") or []))[:200]
+            except Exception:
+                _voice_text = ""
+
+            _will_voice = bool(_voice_text)
+            # 陌生人不给语音
+            if _will_voice and not _is_owner:
+                try:
+                    import stranger_limit as _slv
+
+                    if not _slv.allow_voice(username, _cfg):
+                        log("[陌生人] 不给 %s 发语音（设置里关了）" % target)
+                        _will_voice = False
+                        _voice_text = ""
+                except Exception:
+                    pass
+
+            _skip_text = _will_voice and VOICE_ONLY
+            _skip_images = _will_voice and MEDIA_EXCLUSIVE
+            if _skip_text:
+                log("[媒体] 这条只发语音，不发文字")
+
             # 发第一条之前先「读一遍」——真人不会秒回
             try:
                 _said = data.get("reply") or " ".join(str(b) for b in bubbles[:2])
@@ -4634,6 +4673,8 @@ def main():
 
             first = True
             for line in bubbles:
+                if _skip_text:
+                    break
                 if not line:
                     continue
                 # 第一条如果是骂人/点名，用真 @（UI 里选成员），而不是纯文本 @名字
@@ -4667,6 +4708,10 @@ def main():
                 _imgs = data.get("images") or []
                 if isinstance(_imgs, str):
                     _imgs = [_imgs]
+                if _skip_images:
+                    if _imgs:
+                        log("[媒体] 这条发语音，就不发图了（%d 张）" % len(_imgs))
+                    _imgs = []
 
                 for _name in _imgs[:3]:              # 一次最多 3 张
                     _p = resolve_media_path(_name)
@@ -4697,10 +4742,6 @@ def main():
                     _voice_text = str(_voice_spec.get("text") or "").strip()
                 elif isinstance(_voice_spec, str):
                     _voice_text = _voice_spec.strip()
-
-                if not _voice_text and VOICE_CHANCE > 0 and random.random() < VOICE_CHANCE:
-                    # 兼容老核心：没有 voice 字段时沿用原来的做法
-                    _voice_text = " ".join(str(b) for b in (data.get("bubbles") or []))[:200]
 
                 if _voice_text:
                     _ctx = _voice_text
