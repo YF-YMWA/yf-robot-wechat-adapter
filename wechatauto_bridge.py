@@ -4609,6 +4609,20 @@ def main():
             if not rate_guard(username):
                 log("这一分钟回太多了，先停一下：", target)
                 return
+
+            # 陌生人限制：每天回话次数（主人/白名单不受限）
+            _is_owner = bool(MASTER_WXID) and str(username) == str(MASTER_WXID)
+            if not _is_owner:
+                try:
+                    import stranger_limit as _sl
+
+                    _okr, _why = _sl.check_reply(username, _cfg)
+                    if not _okr:
+                        log("[陌生人] 不回 %s：%s" % (target, _why))
+                        return
+                except Exception as _se:            # noqa: BLE001
+                    log("[陌生人] 次数检查失败（放行）：%r" % (_se,))
+
             log("回复", ("群" if is_group else "私聊"), target, "→", nickname, "：", (bubbles[0] or "")[:40])
 
             # 发第一条之前先「读一遍」——真人不会秒回
@@ -4638,6 +4652,13 @@ def main():
                         line = "@%s %s" % (mention, line)
                 send_text(line, target, username, quote_text=(content if first and QUOTE_REPLY else None))
                 first = False
+                if not _is_owner:
+                    try:
+                        import stranger_limit as _sl2
+
+                        _sl2.note_reply(username, _cfg)
+                    except Exception:
+                        pass
                 # 按字数估打字时间 + 随机抖动（以前是写死的 0.6 秒，三条几乎同时到）
                 time.sleep(bubble_pause(line))
 
