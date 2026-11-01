@@ -275,7 +275,7 @@ def pull_policy():
     所以以核心为准：心跳循环里每 20 秒拉一次，改完 20 秒内生效。
     核心不可达就继续用本地值（本地兜底路径要用到）。
     """
-    global QUOTE_REPLY, STICKER_CHANCE, MEDIA_COLLECT, COLLECT_WHITELIST
+    global QUOTE_REPLY, STICKER_CHANCE, MEDIA_COLLECT, COLLECT_WHITELIST, VOICE_MODE, VOICE_OUT_DEVICE
     try:
         # requests 只在 main() 里 import，模块级函数要用得自己进来
         import requests as _requests
@@ -305,6 +305,11 @@ def pull_policy():
 
         if isinstance(j.get("voiceChance"), (int, float)):
             VOICE_CHANCE = max(0.0, min(1.0, float(j["voiceChance"])))
+
+        if j.get("voiceMode") in ("file", "ptt"):
+            VOICE_MODE = j["voiceMode"]
+        if isinstance(j.get("voiceOutDevice"), (int, float)):
+            VOICE_OUT_DEVICE = int(j["voiceOutDevice"])
     except Exception:                              # noqa: BLE001
         pass
 
@@ -440,6 +445,11 @@ STICKER_CHANCE = float(os.environ.get("WHALE_STICKER_CHANCE", "0"))
 
 # 回复改成发语音的概率（0 = 不发）。由核心的 /api/media/policy 下发。
 VOICE_CHANCE = float(os.environ.get("WHALE_VOICE_CHANCE", "0"))
+
+# 语音怎么发：file = 当文件发（稳，但不显示成语音条）；
+#             ptt  = 按住 Alt 录一条真语音（需要声音能进微信麦克风，见 docs/VOICE.md）
+VOICE_MODE = "file"
+VOICE_OUT_DEVICE = -1
 
 # 是否收藏收到的图片（存到 data/images/，控制台可查看）
 MEDIA_COLLECT = os.environ.get("WHALE_MEDIA_COLLECT", "1") not in ("0", "false", "no")
@@ -4647,7 +4657,28 @@ def main():
                 if _voice_text:
                     _ctx = _voice_text
                     log("[语音] 合成中…（%d 字）" % len(_ctx))
-                    _vp = core_tts(_ctx)
+                    if VOICE_MODE == "ptt":
+                        # 发真语音条：按住 Alt 说话，把合成的声音送进麦克风
+                        try:
+                            import voice_send as _vs
+
+                            _res = _vs.send_voice(
+                                _ctx,
+                                chat=target,
+                                tts_fn=core_tts,
+                                out_device=(VOICE_OUT_DEVICE if VOICE_OUT_DEVICE >= 0 else None),
+                                log=log,
+                            )
+                            if _res.get("ok"):
+                                log("[语音] 已发语音条（按住 %.1fs，验证=%s）"
+                                    % (_res.get("seconds") or 0, _res.get("verified")))
+                                _vp = ""   # 已经发过了，别再当文件发一遍
+                            else:
+                                log("[语音] 发语音条失败：%s → 回退当文件发" % _res.get("error"))
+                        except Exception as _ve:          # noqa: BLE001
+                            log("[语音] 发语音条异常：%r → 回退当文件发" % (_ve,))
+
+                    _vp = core_tts(_ctx) if not locals().get("_vp") else _vp
                     if _vp:
                         time.sleep(0.8)
                         # gui 可能还没建（纯文本回复不会建），这里自己兜一下。
