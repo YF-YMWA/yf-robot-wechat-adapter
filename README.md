@@ -1,4 +1,4 @@
-# YF-Robot 微信适配器
+# E Night Companion（ENC / ENbot）微信适配器
 
 > ## ⚠️ 先读这段
 >
@@ -9,9 +9,9 @@
 > - 出了任何问题（封号、数据丢失、法律纠纷）**自己承担**，作者不提供任何担保
 > - 如果你不接受这些，请直接关掉这个页面
 
-这是 [YF-Robot](https://github.com/your-name/yf-robot) 的微信适配器。
+这是 [E Night Companion](https://github.com/YF-YMWA/e-night-companion) 的微信适配器。
 
-核心（YF-Robot）不含任何平台的登录或自动化代码，只提供一套 HTTP 协议。
+核心（E Night Companion，简称 ENC / ENbot）不含任何平台的登录或自动化代码，只提供一套 HTTP 协议。
 这个仓库负责把微信的消息转给核心、把核心的回复发出去。
 
 ---
@@ -19,7 +19,7 @@
 ## 它做什么
 
 ```
-微信客户端 ──(UIA / 本地数据库)──▶ 本适配器 ──(HTTP)──▶ YF-Robot 核心
+微信客户端 ──(UIA / 本地数据库)──▶ 本适配器 ──(HTTP)──▶ ENbot 核心
                                       ▲                      │
                                       └──── bubbles ─────────┘
 ```
@@ -46,7 +46,7 @@ pip install wechatauto-replica requests pillow
 
 ## 跑起来
 
-1. 先启动核心（YF-Robot 的 `YF-Robot.bat`），确认控制台能打开
+1. 先启动核心（ENbot 的 `ENbot.bat`），确认控制台能打开
 2. 复制配置：
 
 ```bash

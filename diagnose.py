@@ -30,7 +30,7 @@ def log(msg):
 
 open(OUT, 'w').close()
 log('========================================')
-log('  YF-Robot 诊断报告')
+log('  E Night Companion（ENbot）诊断报告')
 log('  时间: ' + time.strftime('%Y-%m-%d %H:%M:%S'))
 log('========================================')
 log('')
